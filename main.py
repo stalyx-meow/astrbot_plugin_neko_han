@@ -224,6 +224,8 @@ class NekoHanPlugin(Star):
         self.world: NekoWorld | None = None
         self._tick_task: asyncio.Task | None = None
         self._stop_event = asyncio.Event()
+        #: 不阻塞指令回复的主动消息任务
+        self._bg_tasks: set[asyncio.Task] = set()
 
         self.data_dir = self._resolve_data_dir()
 
@@ -309,6 +311,9 @@ class NekoHanPlugin(Star):
     async def terminate(self) -> None:
         """插件卸载/重载时：停止后台任务并落盘。"""
         self._stop_event.set()
+        for task in list(self._bg_tasks):
+            task.cancel()
+        self._bg_tasks.clear()
         if self._tick_task is not None:
             self._tick_task.cancel()
             try:
@@ -405,6 +410,19 @@ class NekoHanPlugin(Star):
         """取玩家最后一次发言的会话标识（用于主动推送）。"""
         player = self.world.get_player(str(owner or "")) if self.world else None
         return str((player or {}).get("umo") or "")
+
+    def _push_soon(self, umo: str, text: str, kind: str) -> None:
+        """发送主动消息，但**不阻塞当前指令的回复**。
+
+        指令回复必须马上给出：如果先 await 一次跨会话的网络发送，
+        聊天里就会出现"机器人半天不回，然后回复上一条指令"的错位现象。
+        因此把通知丢到后台任务里，失败只记日志。
+        """
+        if not umo:
+            return
+        task = asyncio.create_task(self._push(umo, text, kind))
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
 
     async def _push(self, umo: str, text: str, kind: str) -> None:
         """发送一条主动消息，失败只记日志，不影响后台循环。"""
@@ -1138,7 +1156,7 @@ class NekoHanPlugin(Star):
         if self._cfg_bool("display.notify_on_duel", True):
             umo = self._player_umo(target_cat.get("owner"))
             if umo and umo != (event.unified_msg_origin or ""):
-                await self._push(
+                self._push_soon(
                     umo,
                     f"⚔️ {duel.get('challenger_name')} 的猫娘"
                     f"「{mine.get('name')}」向你的猫娘「{target_cat.get('name')}」"
@@ -1338,18 +1356,16 @@ class NekoHanPlugin(Star):
             target_player = world.get_player(str(target_cat.get("owner") or ""))
             umo = str((target_player or {}).get("umo") or "")
             if umo and umo != (event.unified_msg_origin or ""):
-                try:
-                    await self.context.send_message(
-                        umo,
-                        MessageChain().message(
-                            f"💌 {player.get('name')} 的猫娘「{mine.get('name')}」"
-                            f"向你的猫娘「{target_cat.get('name')}」求婚了！\n"
-                            f"用「/求婚列表」查看，"
-                            f"「/同意 {proposal['id']}」答应她。"
-                        ),
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("Neko_Han: 求婚通知发送失败: %s", exc)
+                self._push_soon(
+                    umo,
+                    (
+                        f"💌 {player.get('name')} 的猫娘「{mine.get('name')}」"
+                        f"向你的猫娘「{target_cat.get('name')}」求婚了！\n"
+                        f"用「/求婚列表」查看，"
+                        f"「/同意 {proposal['id']}」答应她。"
+                    ),
+                    "求婚通知",
+                )
 
         yield await self._reply(
             event,

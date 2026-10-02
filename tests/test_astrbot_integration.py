@@ -198,6 +198,10 @@ def collect(handler, *args, **kwargs) -> list[str]:
         out: list[str] = []
         async for result in handler(*args, **kwargs):
             out.append(_result_text(result))
+        # 插件的主动通知是 fire-and-forget 的后台任务，给它们一点时间跑完，
+        # 否则测试里看不到已发送的消息。
+        for _ in range(5):
+            await asyncio.sleep(0)
         return out
 
     return asyncio.run(drain())
@@ -1102,6 +1106,38 @@ class TestDuelCommands(PluginIntegrationBase):
             any("战书" in m for m in pushed),
             f"未发送战书通知: {pushed}",
         )
+
+    def test_notification_failure_does_not_break_reply(self):
+        """主动通知是后台任务：它失败也必须照常回复指令。
+
+        否则一旦对方会话不可达，发起人就会看到"机器人不回话"。
+        """
+        self.call("neko_wallet", self.event(uid="9002", name="乙", umo="aiocqhttp:GroupMessage:222"))
+
+        async def boom(*args, **kwargs):
+            raise RuntimeError("send failed")
+
+        self.context.send_message = boom
+
+        a_ev = self.event(uid="9001", name="甲", umo="aiocqhttp:GroupMessage:111")
+        b_ev = self.event(uid="9002", name="乙", umo="aiocqhttp:GroupMessage:222")
+        self.call("neko_adopt", a_ev, "阿花")
+        self.call("neko_adopt", b_ev, "阿草")
+
+        out = self.call("neko_duel", a_ev, "阿花", "阿草", 100)
+        self.assertIn("战书已送出", out[0])
+        self.assertIn("D1", out[0])
+
+    def test_push_soon_noop_without_session(self):
+        """没有对方会话时不应报错，也不应影响回复。"""
+        a_ev = self.event(uid="9001", name="甲")
+        b_ev = self.event(uid="9002", name="乙")
+        self.call("neko_adopt", a_ev, "阿花")
+        self.call("neko_adopt", b_ev, "阿草")
+        # 清掉乙的会话，模拟"乙从未发过言"
+        self.plugin.world.get_player("aiocqhttp:9002")["umo"] = ""
+        out = self.call("neko_duel", a_ev, "阿花", "阿草", 100)
+        self.assertIn("战书已送出", out[0])
 
     def test_help_mentions_duel(self):
         out = self.call("neko_help", self.event())

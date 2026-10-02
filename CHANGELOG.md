@@ -4,6 +4,20 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [v1.2.1] - 2026-10-03
+
+### 修复
+
+- **指令回复被主动通知拖慢，导致聊天里出现"回复错位"**
+  （例如：第二条指令的回复位置显示的是第一条指令的结果，让人误以为参数被解析错了）。
+  原因是 `/决斗`、`/求婚` 在回复发起人之前，先 `await` 了一次跨会话的通知发送。
+  现在改为**后台任务发送（fire-and-forget）**，指令回复不再等待通知；
+  通知失败也只会记日志，不会影响回复。
+
+### 测试
+
+- 238 项测试（新增 2 项）：通知失败时指令仍正常回复、无对方会话时静默跳过。
+
 ## [v1.2.0] - 2026-10-03
 
 ### 新增
@@ -115,6 +129,7 @@
   （插件装载、指令注册与参数解析、每条指令的端到端行为、面板 API 结构、
   配置 Schema 合法性、metadata 加载条件、面板静态资源契约）。
 
+[v1.2.1]: https://github.com/stalyx-meow/astrbot_plugin_neko_han/releases/tag/v1.2.1
 [v1.2.0]: https://github.com/stalyx-meow/astrbot_plugin_neko_han/releases/tag/v1.2.0
 [v1.1.0]: https://github.com/stalyx-meow/astrbot_plugin_neko_han/releases/tag/v1.1.0
 [v1.0.0]: https://github.com/stalyx-meow/astrbot_plugin_neko_han/releases/tag/v1.0.0
