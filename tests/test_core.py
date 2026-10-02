@@ -561,6 +561,93 @@ class TestTasks(WorldTestCase):
         world.start_task(cat, slots[1]["slot"])
         self.assertEqual(len(world.active_slots(cat)), 2)
 
+    def test_task_list_shows_in_progress_task(self):
+        """「/任务」必须把进行中的任务单独、醒目地列出来。"""
+        from core import format as fmt
+
+        player = self.make_player()
+        cat = self.make_catgirl(player)
+        slot = self.world.task_slots(cat)[0]
+
+        # 未开始时：明确说明没有进行中的任务
+        text = fmt.task_list(cat["name"], self.world.task_slots(cat), cat["energy"])
+        self.assertIn("当前没有进行中的任务", text)
+        self.assertNotIn("⏳ [", text)
+
+        self.world.start_task(cat, slot["slot"])
+        text = fmt.task_list(cat["name"], self.world.task_slots(cat), cat["energy"])
+
+        # 顶部独立区块
+        self.assertIn("当前进行中", text)
+        self.assertIn(f"「{slot['name']}」", text)
+        self.assertIn("还剩", text)
+        self.assertIn(f"+{slot['reward']} 金币", text)
+        # 明细里用 ⏳ 而不是 ▫️，与"未开始"区分开
+        self.assertIn(f"⏳ [{slot['slot']}]", text)
+        self.assertNotIn(f"▫️ [{slot['slot']}]", text)
+
+    def test_task_progress_bar_fills_over_time(self):
+        """进度条要随完成度增长。"""
+        from core import format as fmt
+
+        now = now_ts()
+        total = 600
+        base = {
+            "slot": 1,
+            "emoji": "🎣",
+            "name": "钓鱼",
+            "reward": 105,
+            "status": "active",
+        }
+        filled_counts = []
+        # 100% 时任务已到时间，会渲染成"已做完"（另有用例覆盖），这里只验证 0-75%
+        for percent in (0, 25, 50, 75):
+            elapsed = total * percent / 100
+            slot = dict(
+                base,
+                started_at=now - elapsed,
+                finish_at=now + (total - elapsed),
+            )
+            line = fmt.task_progress_line(slot)
+            self.assertIn(f"{int(percent)}%", line)
+            filled_counts.append(line.count("█"))
+        # 单调不减
+        self.assertEqual(filled_counts, sorted(filled_counts))
+        self.assertGreater(filled_counts[-1], filled_counts[0])
+
+    def test_task_progress_line_when_done_waiting_payout(self):
+        """已到时间但还没被结算时，提示"马上到账"。"""
+        from core import format as fmt
+
+        slot = {
+            "slot": 1,
+            "emoji": "🎣",
+            "name": "钓鱼",
+            "reward": 105,
+            "status": "active",
+            "started_at": now_ts() - 700,
+            "finish_at": now_ts() - 1,
+        }
+        line = fmt.task_progress_line(slot)
+        self.assertIn("已做完", line)
+        self.assertIn("105", line)
+
+    def test_task_list_shows_multiple_parallel_tasks(self):
+        """开启并行任务时，进行中区块要列出全部。"""
+        from core import format as fmt
+
+        world = make_world({"tasks": {"allow_parallel_tasks": True}})
+        player, _ = world.ensure_player("aiocqhttp", "91", "并行", "")
+        cat = world.adopt(player, "多线")
+        slots = world.task_slots(cat)
+        world.start_task(cat, slots[0]["slot"])
+        world.start_task(cat, slots[1]["slot"])
+
+        text = fmt.task_list(cat["name"], world.task_slots(cat), cat["energy"])
+        head = text.split("📋")[0]
+        self.assertIn(f"「{slots[0]['name']}」", head)
+        self.assertIn(f"「{slots[1]['name']}」", head)
+
     def test_reward_not_paid_before_finish(self):
         """任务没到时间不能提前拿钱。"""
         player = self.make_player()

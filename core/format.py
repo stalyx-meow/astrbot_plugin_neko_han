@@ -25,6 +25,21 @@ def bar(value: int, maximum: int, width: int = 10) -> str:
     return f"{_SOLID * filled}{_EMPTY * (width - filled)} {value}/{maximum}"
 
 
+def progress_bar(fraction: float, width: int = 10) -> str:
+    """按比例生成进度条（只有方块，不带数值）。"""
+    fraction = max(0.0, min(1.0, float(fraction)))
+    filled = int(round(width * fraction))
+    return f"{_SOLID * filled}{_EMPTY * (width - filled)}"
+
+
+#: 任务状态对应的前缀标记（进行中用自己的标记，便于一眼区分）
+_STATUS_MARKS: dict[str, str] = {
+    STATUS_ACTIVE: "⏳",
+    STATUS_DONE: "✅",
+    STATUS_FAILED: "❌",
+}
+
+
 def coins(amount: int) -> str:
     """金币文案。"""
     return f"{as_int(amount)} 金币"
@@ -122,13 +137,56 @@ def catgirl_list(
     return "\n".join(lines)
 
 
+def task_progress_line(slot: dict[str, Any]) -> str:
+    """把进行中的任务渲染成一行带进度条与剩余时间的文案。"""
+    emoji = slot.get("emoji", "")
+    name = slot.get("name")
+    started = as_int(slot.get("started_at"), 0)
+    finish = as_int(slot.get("finish_at"), 0)
+    now = now_ts()
+    reward = as_int(slot.get("reward"), 0)
+
+    if finish <= 0:
+        return f"　{emoji}「{name}」进行中"
+    remaining = finish - now
+    if remaining <= 0:
+        return f"　{emoji}「{name}」已做完，{reward} 金币马上到账"
+
+    total = max(1, finish - started)
+    done = max(0, now - started)
+    percent = int(done * 100 / total)
+    return (
+        f"　{emoji}「{name}」"
+        f"{progress_bar(done / total)} {percent}%"
+        f"　还剩 {format_duration(remaining)}　完成后 +{reward} 金币"
+    )
+
+
 def task_list(name: str, slots: list[dict[str, Any]], energy: int) -> str:
-    """渲染某只猫娘的每日任务列表。"""
+    """渲染某只猫娘的每日任务列表。
+
+    顶部单独列出"当前正在进行的任务"，让玩家一眼看到进度；
+    下面再给出全部任务的明细。
+    """
     if not slots:
         return f"{name} 今天没有任务，明天再来看看吧。"
-    lines = [f"📋 {name} 今天的任务（剩余精力 {energy}）："]
+
+    lines: list[str] = []
+
+    # ① 当前进行中的任务（独立区块，支持并行任务时列出多条）
+    active = [slot for slot in slots if slot.get("status") == STATUS_ACTIVE]
+    if active:
+        lines.append(f"⏳ {name} 当前进行中：")
+        lines.extend(task_progress_line(slot) for slot in active)
+    else:
+        lines.append(f"⏳ {name} 当前没有进行中的任务")
+
+    # ② 全部任务明细
+    lines.append("")
+    lines.append(f"📋 今天的任务（剩余精力 {energy}）：")
     for slot in slots:
         status = slot.get("status")
+        mark = _STATUS_MARKS.get(str(status), "▫️")
         label = STATUS_LABELS.get(str(status), str(status))
         if status == STATUS_ACTIVE:
             remaining = as_int(slot.get("finish_at"), 0) - now_ts()
@@ -139,9 +197,8 @@ def task_list(name: str, slots: list[dict[str, Any]], energy: int) -> str:
             )
         elif status == STATUS_DONE:
             label = "已完成，奖励已到账"
-        prefix = {STATUS_DONE: "✅", STATUS_FAILED: "❌"}.get(str(status), "▫️")
         lines.append(
-            f"{prefix} [{slot.get('slot')}] {slot.get('emoji', '')} {slot.get('name')}"
+            f"{mark} [{slot.get('slot')}] {slot.get('emoji', '')} {slot.get('name')}"
             f"　消耗精力 {slot.get('energy')}"
             f" · 耗时 {slot.get('minutes')} 分钟"
             f" · 奖励 {slot.get('reward')} 金币"
@@ -150,6 +207,7 @@ def task_list(name: str, slots: list[dict[str, Any]], energy: int) -> str:
         desc = slot.get("desc")
         if desc:
             lines.append(f"　　{desc}")
+
     lines.append(
         "发送「/开始 <猫娘> <编号>」开始任务；做完后奖励会**自动发放**，不需要手动领取。"
     )
@@ -274,6 +332,8 @@ __all__ = [
     "catgirl_card",
     "catgirl_list",
     "task_list",
+    "task_progress_line",
+    "progress_bar",
     "task_notice",
     "shop_list",
     "inventory_list",
