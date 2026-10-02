@@ -179,50 +179,68 @@ class TaskMixin:
         slot["finish_at"] = now + max(1, as_int(slot.get("minutes"), 5)) * 60
         return slot
 
-    def claim_task(
+    def settle_tasks(
         self,
-        player: dict[str, Any],
         catgirl: dict[str, Any],
-        number: int | None = None,
+        *,
+        now: float | None = None,
     ) -> list[dict[str, Any]]:
-        """领取已到时间的任务奖励；`number` 为 None 时领取全部可领任务。"""
+        """自动结算所有已完成的任务：发放金币并标记为已完成。
+
+        这是任务奖励的**唯一**发放入口 —— 玩家不需要手动领取。返回本次
+        真正结算的任务摘要列表（供调用方生成通知），没有可结算的任务时返回空列表。
+
+        重复调用是幂等的：已标记为 `done` 的任务不会被重复发奖。
+        """
+        now = now if now is not None else now_ts()
+
+        # 猫娘已经离世：进行中的任务作废，不再发放奖励
         if not catgirl.get("alive", True):
-            raise GameError(f"{catgirl.get('name')} 已经离开了，无法领取奖励。")
-        self.settle_catgirl(catgirl)
+            for slot in self._raw_slots(catgirl):
+                if slot.get("status") == STATUS_ACTIVE:
+                    slot["status"] = STATUS_FAILED
+            return []
 
-        slots = self.task_slots(catgirl)
-        if number is None:
-            targets = [
-                s
-                for s in slots
-                if s.get("status") == STATUS_ACTIVE
-                and now_ts() >= as_int(s.get("finish_at"), 0)
-            ]
-            if not targets:
-                raise GameError("现在没有可以领取的任务奖励。")
-        else:
-            slot = self.find_slot(catgirl, number)
-            if slot is None:
-                raise GameError(f"找不到编号为 {number} 的任务。")
-            if slot.get("status") != STATUS_ACTIVE:
-                raise GameError(f"任务「{slot['name']}」现在不能领取奖励。")
-            remaining = as_int(slot.get("finish_at"), 0) - now_ts()
-            if remaining > 0:
-                raise GameError(
-                    f"任务「{slot['name']}」还没做完，还要等 {int(remaining) + 1} 秒左右。"
-                )
-            targets = [slot]
+        player = self.store.players.get(str(catgirl.get("owner") or ""))
+        finished = [
+            slot
+            for slot in self.task_slots(catgirl)
+            if slot.get("status") == STATUS_ACTIVE
+            and now >= as_int(slot.get("finish_at"), 0)
+        ]
+        if not finished:
+            return []
 
-        claimed: list[dict[str, Any]] = []
-        for slot in targets:
+        completed: list[dict[str, Any]] = []
+        for slot in finished:
             slot["status"] = STATUS_DONE
             reward = as_int(slot.get("reward"), 0)
-            self.add_coins(player, reward)
+            if player is not None:
+                self.add_coins(player, reward)
             stats = catgirl.setdefault("stats", {})
             stats["tasks_done"] = as_int(stats.get("tasks_done"), 0) + 1
             stats["coins_earned"] = as_int(stats.get("coins_earned"), 0) + reward
-            claimed.append(slot)
-        return claimed
+            completed.append(
+                {
+                    "slot": as_int(slot.get("slot"), 0),
+                    "name": slot.get("name"),
+                    "emoji": slot.get("emoji", "📋"),
+                    "tier": slot.get("tier", "normal"),
+                    "reward": reward,
+                    "catgirl_id": catgirl.get("id"),
+                    "catgirl_name": catgirl.get("name"),
+                    "paid": player is not None,
+                }
+            )
+        return completed
+
+    def _raw_slots(self, catgirl: dict[str, Any]) -> list[dict[str, Any]]:
+        """不触发每日生成的原始任务列表（已离世的猫娘用）。"""
+        state = catgirl.get("tasks")
+        if not isinstance(state, dict):
+            return []
+        slots = state.get("slots")
+        return slots if isinstance(slots, list) else []
 
 
 __all__ = [

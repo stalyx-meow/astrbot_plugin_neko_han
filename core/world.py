@@ -366,13 +366,54 @@ class NekoWorld(
     # ==================================================================
     # 每日结算
     # ==================================================================
-    def tick(self) -> dict[str, Any]:
-        """执行一次全局结算：衰减、商城刷新、过期求婚清理。
+    #: 每只猫娘最多保留多少条"待通知的任务完成记录"，防止无人领取时无限增长
+    _TASK_NOTICE_LIMIT = 10
 
-        返回本轮的变动（死亡事件等），供 `main.py` 做主动通知。
+    def settle_catgirl(
+        self, catgirl: dict[str, Any], *, today: date | None = None
+    ) -> dict[str, Any] | None:
+        """结算一只猫娘。
+
+        先**自动结算已完成的任务**（发放奖励），再执行生存衰减 —— 顺序很重要：
+        如果任务是在猫娘饿死之前完成的，她依然应该拿到那份报酬。
+        发放结果会记入待通知队列，由指令回复或后台任务告诉玩家。
+        """
+        if catgirl.get("alive", True):
+            completed = self.settle_tasks(catgirl)
+            if completed:
+                notices = catgirl.get("task_notices")
+                if not isinstance(notices, list):
+                    notices = []
+                    catgirl["task_notices"] = notices
+                notices.extend(completed)
+                # 只保留最近的若干条
+                if len(notices) > self._TASK_NOTICE_LIMIT:
+                    del notices[: len(notices) - self._TASK_NOTICE_LIMIT]
+        return super().settle_catgirl(catgirl, today=today)
+
+    def drain_task_notices(self, catgirl: dict[str, Any]) -> list[dict[str, Any]]:
+        """取出并清空某只猫娘的"任务已完成"通知队列。"""
+        notices = catgirl.get("task_notices")
+        if not isinstance(notices, list) or not notices:
+            return []
+        catgirl["task_notices"] = []
+        return list(notices)
+
+    def tick(self) -> dict[str, Any]:
+        """执行一次全局结算：任务自动发奖、生存衰减、商城刷新、过期求婚清理。
+
+        返回本轮的变动（死亡事件、任务完成事件等），供 `main.py` 做主动通知。
         """
         today = self.today()
         deaths = self.settle_all(today=today)
+
+        # 收集本轮的"任务自动完成"记录（settle_all 已顺带结算了任务奖励）
+        task_events: list[dict[str, Any]] = []
+        for catgirl in self.store.catgirls.values():
+            for notice in self.drain_task_notices(catgirl):
+                event = dict(notice)
+                event["owner"] = catgirl.get("owner", "")
+                task_events.append(event)
 
         shop = self.store.state.get("official_shop")
         shop_refreshed = not isinstance(shop, dict) or str(
@@ -387,6 +428,7 @@ class NekoWorld(
         return {
             "date": today.isoformat(),
             "deaths": deaths,
+            "task_done": task_events,
             "shop_refreshed": shop_refreshed,
             "proposals_expired": expired,
         }

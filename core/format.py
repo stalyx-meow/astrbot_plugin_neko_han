@@ -133,10 +133,12 @@ def task_list(name: str, slots: list[dict[str, Any]], energy: int) -> str:
         if status == STATUS_ACTIVE:
             remaining = as_int(slot.get("finish_at"), 0) - now_ts()
             label = (
-                "可领取 ✅"
+                "已完成，奖励自动发放中"
                 if remaining <= 0
                 else f"进行中（还剩 {format_duration(remaining)}）"
             )
+        elif status == STATUS_DONE:
+            label = "已完成，奖励已到账"
         prefix = {STATUS_DONE: "✅", STATUS_FAILED: "❌"}.get(str(status), "▫️")
         lines.append(
             f"{prefix} [{slot.get('slot')}] {slot.get('emoji', '')} {slot.get('name')}"
@@ -148,7 +150,26 @@ def task_list(name: str, slots: list[dict[str, Any]], energy: int) -> str:
         desc = slot.get("desc")
         if desc:
             lines.append(f"　　{desc}")
-    lines.append("发送「neko 开始 <猫娘> <编号>」开始任务，「neko 领取 <猫娘>」领取奖励。")
+    lines.append(
+        "发送「/开始 <猫娘> <编号>」开始任务；做完后奖励会**自动发放**，不需要手动领取。"
+    )
+    return "\n".join(lines)
+
+
+def task_notice(notices: list[dict[str, Any]]) -> str:
+    """渲染"任务已完成、奖励已自动到账"的提示。"""
+    if not notices:
+        return ""
+    total = sum(as_int(notice.get("reward"), 0) for notice in notices)
+    lines: list[str] = []
+    for notice in notices:
+        lines.append(
+            f"🎉 {notice.get('catgirl_name')} 完成了"
+            f"{notice.get('emoji', '')}「{notice.get('name')}」，"
+            f"奖励 {notice.get('reward')} 金币已自动到账"
+        )
+    if len(notices) > 1:
+        lines.append(f"　合计 +{total} 金币")
     return "\n".join(lines)
 
 
@@ -253,6 +274,7 @@ __all__ = [
     "catgirl_card",
     "catgirl_list",
     "task_list",
+    "task_notice",
     "shop_list",
     "inventory_list",
     "market_list",

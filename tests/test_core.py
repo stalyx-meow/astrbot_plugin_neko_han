@@ -561,51 +561,145 @@ class TestTasks(WorldTestCase):
         world.start_task(cat, slots[1]["slot"])
         self.assertEqual(len(world.active_slots(cat)), 2)
 
-    def test_claim_before_finish_rejected(self):
+    def test_reward_not_paid_before_finish(self):
+        """任务没到时间不能提前拿钱。"""
         player = self.make_player()
         cat = self.make_catgirl(player)
         slot = self.world.task_slots(cat)[0]
         self.world.start_task(cat, slot["slot"])
-        with self.assertRaises(GameError):
-            self.world.claim_task(player, cat, slot["slot"])
-
-    def test_claim_pays_reward(self):
-        player = self.make_player()
-        cat = self.make_catgirl(player)
-        slot = self.world.task_slots(cat)[0]
-        self.world.start_task(cat, slot["slot"])
-        slot["finish_at"] = now_ts() - 1  # 模拟已完成
         before = player["coins"]
-        claimed = self.world.claim_task(player, cat, slot["slot"])
-        self.assertEqual(len(claimed), 1)
+        self.assertEqual(self.world.settle_tasks(cat), [])
+        self.assertEqual(player["coins"], before)
+        self.assertEqual(slot["status"], "active")
+
+    def test_reward_auto_paid_when_finished(self):
+        """任务到时间后自动发奖，无需手动领取。"""
+        player = self.make_player()
+        cat = self.make_catgirl(player)
+        slot = self.world.task_slots(cat)[0]
+        self.world.start_task(cat, slot["slot"])
+        slot["finish_at"] = now_ts() - 1  # 模拟时间到
+
+        before = player["coins"]
+        completed = self.world.settle_tasks(cat)
+        self.assertEqual(len(completed), 1)
+        self.assertEqual(completed[0]["name"], slot["name"])
+        self.assertEqual(completed[0]["reward"], slot["reward"])
         self.assertEqual(player["coins"], before + slot["reward"])
         self.assertEqual(slot["status"], "done")
         self.assertEqual(cat["stats"]["tasks_done"], 1)
 
-    def test_claim_all(self):
+    def test_all_finished_tasks_auto_paid(self):
         world = make_world({"tasks": {"allow_parallel_tasks": True}})
         player, _ = world.ensure_player("aiocqhttp", "12", "全部", "")
         cat = world.adopt(player, "勤劳")
         slots = world.task_slots(cat)
-        expected = 0
+        # 注意：start_task 内部会触发一次结算，所以先把任务都开始、再统一回拨时间
         for slot in slots:
             world.start_task(cat, slot["slot"])
+        expected = sum(slot["reward"] for slot in slots)
+        for slot in slots:
             slot["finish_at"] = now_ts() - 1
-            expected += slot["reward"]
         before = player["coins"]
-        claimed = world.claim_task(player, cat, None)
-        self.assertEqual(len(claimed), len(slots))
+        completed = world.settle_tasks(cat)
+        self.assertEqual(len(completed), len(slots))
         self.assertEqual(player["coins"], before + expected)
 
-    def test_claim_twice_rejected(self):
+    def test_auto_settle_is_idempotent(self):
+        """重复结算不能重复发钱。"""
         player = self.make_player()
         cat = self.make_catgirl(player)
         slot = self.world.task_slots(cat)[0]
         self.world.start_task(cat, slot["slot"])
         slot["finish_at"] = now_ts() - 1
-        self.world.claim_task(player, cat, slot["slot"])
-        with self.assertRaises(GameError):
-            self.world.claim_task(player, cat, slot["slot"])
+
+        self.world.settle_tasks(cat)
+        after_first = player["coins"]
+        self.assertEqual(self.world.settle_tasks(cat), [])
+        self.assertEqual(player["coins"], after_first)
+        self.assertEqual(cat["stats"]["tasks_done"], 1)
+
+    def test_settle_catgirl_pays_finished_task_and_queues_notice(self):
+        """读取猫娘时就会自动结算，并把结果放进待通知队列。"""
+        player = self.make_player()
+        cat = self.make_catgirl(player)
+        slot = self.world.task_slots(cat)[0]
+        self.world.start_task(cat, slot["slot"])
+        slot["finish_at"] = now_ts() - 1
+
+        before = player["coins"]
+        self.world.settle_catgirl(cat)  # 任意一次访问
+        self.assertEqual(player["coins"], before + slot["reward"])
+        self.assertEqual(slot["status"], "done")
+
+        notices = self.world.drain_task_notices(cat)
+        self.assertEqual(len(notices), 1)
+        self.assertEqual(notices[0]["name"], slot["name"])
+        self.assertEqual(notices[0]["catgirl_name"], cat["name"])
+        # 通知只取一次
+        self.assertEqual(self.world.drain_task_notices(cat), [])
+
+    def test_task_notices_are_bounded(self):
+        """待通知队列不会无限增长。"""
+        world = make_world(
+            {
+                # 不衰减且精力充足，保证猫娘能连续接完 8 个任务而不会中途没精力
+                "survival": {
+                    "satiety_decay_per_day": 0,
+                    "hydration_decay_per_day": 0,
+                    "max_energy": 1000,
+                    "energy_regen_per_day": 1000,
+                },
+                "tasks": {"allow_parallel_tasks": True, "daily_task_count": 8},
+            }
+        )
+        player, _ = world.ensure_player("aiocqhttp", "13", "刷屏", "")
+        cat = world.adopt(player, "劳模")
+        today = world.today()
+
+        for day in range(4):
+            # 往前拨一天：触发精力回满，并强制重新生成任务
+            cat["last_tick"] = (today - timedelta(days=1)).isoformat()
+            cat["tasks"]["date"] = ""
+            for slot in world.task_slots(cat):
+                if slot["status"] == "pending":
+                    world.start_task(cat, slot["slot"])
+                    slot["finish_at"] = now_ts() - 1
+            world.settle_catgirl(cat)
+
+        notices = cat.get("task_notices") or []
+        self.assertTrue(notices, "应至少产生一条通知")
+        self.assertLessEqual(len(notices), world._TASK_NOTICE_LIMIT)
+
+    def test_dead_catgirl_tasks_become_failed(self):
+        """猫娘离世后进行中的任务作废，不发奖励。"""
+        player = self.make_player()
+        cat = self.make_catgirl(player)
+        slot = self.world.task_slots(cat)[0]
+        self.world.start_task(cat, slot["slot"])
+        slot["finish_at"] = now_ts() - 1
+        self.world._kill_catgirl(cat, "测试")
+
+        before = player["coins"]
+        self.assertEqual(self.world.settle_tasks(cat), [])
+        self.assertEqual(player["coins"], before)
+        self.assertEqual(slot["status"], "failed")
+
+    def test_tick_reports_task_completion(self):
+        """后台结算要能报告"任务已完成"，供主动通知使用。"""
+        player = self.make_player()
+        cat = self.make_catgirl(player)
+        slot = self.world.task_slots(cat)[0]
+        self.world.start_task(cat, slot["slot"])
+        slot["finish_at"] = now_ts() - 1
+
+        result = self.world.tick()
+        events = result["task_done"]
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["owner"], player["key"])
+        self.assertEqual(events[0]["name"], slot["name"])
+        # 通知已被 tick 取走，不会重复推送
+        self.assertEqual(self.world.tick()["task_done"], [])
 
     def test_active_task_carried_across_days(self):
         player = self.make_player()

@@ -21,6 +21,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from typing import Any
@@ -303,7 +304,6 @@ class TestCommandRegistration(PluginIntegrationBase):
             "签到",
             "任务",
             "开始",
-            "领取",
             "商城",
             "购买",
             "市场",
@@ -347,6 +347,14 @@ class TestCommandRegistration(PluginIntegrationBase):
         leftovers = [name for name in registered if name.startswith(("neko ", "猫娘 ", "nh ", "nekohan "))]
         self.assertEqual(leftovers, [], f"仍存在旧写法: {leftovers}")
 
+    def test_claim_command_removed(self):
+        """任务奖励已改为自动发放，/领取 不应再注册。"""
+        registered = self.flat_commands()
+        for name in ("领取", "claim", "领奖"):
+            self.assertNotIn(name, registered, f"{name} 应已移除")
+        # 但「领取金币」是签到的别名，必须保留
+        self.assertIn("领取金币", registered)
+
     def test_does_not_shadow_builtin_commands(self):
         """不能占用 AstrBot 内置指令名，否则会把内置功能顶掉。
 
@@ -381,7 +389,6 @@ class TestCommandRegistration(PluginIntegrationBase):
             ("喂食", ["猫粮"], {"cat": "猫粮", "item": ""}),
             ("状态", [], {"cat": ""}),
             ("开始", ["小奶油", "2"], {"cat": "小奶油", "slot": 2}),
-            ("领取", ["小奶油"], {"cat": "小奶油", "slot": 0}),
             ("购买", ["猫粮"], {"item": "猫粮", "qty": 1}),
             ("购买", ["猫粮", "3"], {"item": "猫粮", "qty": 3}),
             (
@@ -735,26 +742,78 @@ class TestCommandBehaviour(PluginIntegrationBase):
         out = self.call("neko_bag", self.event())
         self.assertIn("猫粮", out[0])
 
-    def test_task_flow(self):
+    def test_task_flow_with_auto_reward(self):
+        """任务流程：开始 → 到时间自动发奖（不需要 /领取）。"""
         self.call("neko_adopt", self.event(), "小奶油")
         out = self.call("neko_tasks", self.event(), "小奶油")
         self.assertIn("任务", out[0])
+        self.assertIn("自动发放", out[0])
+
         out = self.call("neko_start", self.event(), "小奶油", 1)
         self.assertIn("开始", out[0])
-        # 未完成时不能领取
-        out = self.call("neko_claim", self.event(), "小奶油", 1)
-        self.assertIn("😿", out[0])
-        # 模拟完成
+        self.assertIn("自动到账", out[0])
+        self.assertNotIn("/领取", out[0])
+
         player = self.plugin.world.get_player("aiocqhttp:1001")
         cat = self.plugin.world.catgirls_of(player)[0]
         slot = self.plugin.world.find_slot(cat, 1)
-        from core.util import now_ts
-
-        slot["finish_at"] = now_ts() - 1
         before = player["coins"]
-        out = self.call("neko_claim", self.event(), "小奶油", 1)
-        self.assertIn("获得", out[0])
+
+        # 还没到时间：不发奖
+        self.plugin.world.settle_catgirl(cat)
+        self.assertEqual(player["coins"], before)
+
+        # 时间到：自动发奖
+        slot["finish_at"] = time.time() - 1
+        self.plugin.world.settle_catgirl(cat)
         self.assertEqual(player["coins"], before + slot["reward"])
+        self.assertEqual(slot["status"], "done")
+
+    def test_task_reward_reported_on_next_command(self):
+        """自动到账的奖励要在下一次相关指令里告诉玩家。"""
+        self.call("neko_adopt", self.event(), "小奶油")
+        self.call("neko_start", self.event(), "小奶油", 1)
+        player = self.plugin.world.get_player("aiocqhttp:1001")
+        cat = self.plugin.world.catgirls_of(player)[0]
+        slot = self.plugin.world.find_slot(cat, 1)
+        slot["finish_at"] = time.time() - 1
+
+        out = self.call("neko_tasks", self.event(), "小奶油")
+        self.assertIn("奖励", out[0])
+        self.assertIn("自动到账", out[0])
+        self.assertIn(slot["name"], out[0])
+
+        # 通知只出现一次
+        out = self.call("neko_tasks", self.event(), "小奶油")
+        self.assertNotIn("自动到账", out[0])
+
+    def test_task_reward_notice_in_wallet_and_list(self):
+        """/我的 与 /状态 也应能带出到账提示。"""
+        self.call("neko_adopt", self.event(), "小奶油")
+        self.call("neko_start", self.event(), "小奶油", 1)
+        player = self.plugin.world.get_player("aiocqhttp:1001")
+        cat = self.plugin.world.catgirls_of(player)[0]
+        self.plugin.world.find_slot(cat, 1)["finish_at"] = time.time() - 1
+
+        out = self.call("neko_list", self.event())
+        self.assertIn("自动到账", out[0])
+
+        self.call("neko_start", self.event(), "小奶油", 2)
+        cat2 = self.plugin.world.catgirls_of(player)[0]
+        self.plugin.world.find_slot(cat2, 2)["finish_at"] = time.time() - 1
+        out = self.call("neko_status", self.event(), "小奶油")
+        self.assertIn("自动到账", out[0])
+
+    def test_start_reports_already_finished_reward(self):
+        """开始新任务时，顺手把上一个已完成任务的奖励提示出来。"""
+        self.call("neko_adopt", self.event(), "小奶油")
+        self.call("neko_start", self.event(), "小奶油", 1)
+        player = self.plugin.world.get_player("aiocqhttp:1001")
+        cat = self.plugin.world.catgirls_of(player)[0]
+        self.plugin.world.find_slot(cat, 1)["finish_at"] = time.time() - 1
+
+        out = self.call("neko_start", self.event(), "小奶油", 2)
+        self.assertIn("自动到账", out[0])
 
     def test_start_without_slot_number(self):
         self.call("neko_adopt", self.event(), "小奶油")

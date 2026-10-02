@@ -59,8 +59,7 @@ HELP_TEXT = """🐱 Neko_Han 猫娘养成 · 指令一览
 
 【任务】
   /任务 <猫娘>         查看今天的任务
-  /开始 <猫娘> <编号>  开始任务（消耗精力）
-  /领取 <猫娘> [编号]  领取奖励（省略编号则领取全部）
+  /开始 <猫娘> <编号>  开始任务（消耗精力，奖励完成后自动到账）
 
 【商城与交易】
   /商城               官方商城（每天刷新，价格浮动）
@@ -105,7 +104,6 @@ _COMMAND_NAMES = frozenset(
         "签到", "daily", "每日", "领取金币",
         "任务", "task", "任务列表",
         "开始", "start", "接任务",
-        "领取", "claim", "领奖",
         "商城", "shop", "商店", "官方商城",
         "购买", "buy", "买",
         "市场", "market", "交易市场",
@@ -329,15 +327,18 @@ class NekoHanPlugin(Star):
                 logger.exception("Neko_Han: 定时结算失败: %s", exc)
 
     async def _notify_tick(self, result: dict[str, Any]) -> None:
-        """把定时结算产生的死亡事件主动通知给主人。"""
-        deaths = result.get("deaths") or []
-        if not deaths or self.world is None:
+        """把定时结算产生的死亡与任务完成事件主动通知给主人。"""
+        if self.world is None:
             return
-        if not self._cfg_bool("display.notify_on_death", True):
+        await self._notify_deaths(result.get("deaths") or [])
+        await self._notify_task_done(result.get("task_done") or [])
+
+    async def _notify_deaths(self, deaths: list[dict[str, Any]]) -> None:
+        """通知猫娘离世。"""
+        if not deaths or not self._cfg_bool("display.notify_on_death", True):
             return
         for event in deaths:
-            player = self.world.get_player(str(event.get("owner") or ""))
-            umo = str((player or {}).get("umo") or "")
+            umo = self._player_umo(event.get("owner"))
             if not umo:
                 continue
             text = (
@@ -345,10 +346,41 @@ class NekoHanPlugin(Star):
                 f"因为{event.get('reason')}离开了……\n"
                 f"如果还想见到她，可以使用「复活草」。"
             )
-            try:
-                await self.context.send_message(umo, MessageChain().message(text))
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("Neko_Han: 死亡通知发送失败: %s", exc)
+            await self._push(umo, text, "死亡通知")
+
+    async def _notify_task_done(self, events: list[dict[str, Any]]) -> None:
+        """通知"任务已完成、奖励已自动到账"（按主人合并成一条，避免刷屏）。"""
+        if not events or not self._cfg_bool("display.notify_on_task_done", True):
+            return
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for event in events:
+            key = str(event.get("owner") or "")
+            if key:
+                grouped.setdefault(key, []).append(event)
+        for owner, items in grouped.items():
+            umo = self._player_umo(owner)
+            if not umo:
+                continue
+            total = sum(as_int(item.get("reward"), 0) for item in items)
+            lines = [
+                f"🎉 {item.get('catgirl_name')} 完成了"
+                f"{item.get('emoji', '')}「{item.get('name')}」，奖励已自动到账"
+                for item in items
+            ]
+            lines.append(f"　本次共 +{total} 金币")
+            await self._push(umo, "\n".join(lines), "任务完成通知")
+
+    def _player_umo(self, owner: Any) -> str:
+        """取玩家最后一次发言的会话标识（用于主动推送）。"""
+        player = self.world.get_player(str(owner or "")) if self.world else None
+        return str((player or {}).get("umo") or "")
+
+    async def _push(self, umo: str, text: str, kind: str) -> None:
+        """发送一条主动消息，失败只记日志，不影响后台循环。"""
+        try:
+            await self.context.send_message(umo, MessageChain().message(text))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Neko_Han: %s 发送失败: %s", kind, exc)
 
     # ==================================================================
     # 通用辅助
@@ -443,6 +475,14 @@ class NekoHanPlugin(Star):
         """命令结束后落盘。"""
         if self.world is not None:
             await self.world.save()
+
+    def _task_notices(self, catgirls: Any) -> str:
+        """取出这些猫娘的"任务奖励已自动到账"通知并清空队列。"""
+        world = self._world()
+        collected: list[dict[str, Any]] = []
+        for catgirl in catgirls:
+            collected.extend(world.drain_task_notices(catgirl))
+        return fmt.task_notice(collected)
 
     def _cat_and_item(
         self, player: dict[str, Any], cat_query: str, item_query: str
@@ -591,10 +631,11 @@ class NekoHanPlugin(Star):
         except GameError as exc:
             yield event.plain_result(fmt.error_box(exc.message))
             return
-        yield await self._reply(
-            event,
-            fmt.catgirl_list(snaps, self._limits(), quota=self._catgirl_quota()),
-        )
+        text = fmt.catgirl_list(snaps, self._limits(), quota=self._catgirl_quota())
+        notice = self._task_notices(cats)
+        if notice:
+            text = notice + "\n\n" + text
+        yield await self._reply(event, text)
 
     @filter.command("状态", alias={"status", "查看"})
     async def neko_status(self, event: AstrMessageEvent, cat: str = ""):
@@ -607,9 +648,11 @@ class NekoHanPlugin(Star):
         except GameError as exc:
             yield event.plain_result(fmt.error_box(exc.message))
             return
-        yield await self._reply(
-            event, fmt.catgirl_card(snap, self._limits(), show_id=self._show_id())
-        )
+        text = fmt.catgirl_card(snap, self._limits(), show_id=self._show_id())
+        notice = self._task_notices([catgirl])
+        if notice:
+            text = notice + "\n\n" + text
+        yield await self._reply(event, text)
 
     @filter.command("改名", alias={"rename"})
     async def neko_rename(self, event: AstrMessageEvent, cat: str = "", new_name: str = ""):
@@ -808,12 +851,13 @@ class NekoHanPlugin(Star):
             yield event.plain_result(fmt.error_box(exc.message))
             return
         await self._persist()
-        yield await self._reply(
-            event,
-            fmt.task_list(
-                str(catgirl.get("name")), slots, as_int(catgirl.get("energy"), 0)
-            ),
+        text = fmt.task_list(
+            str(catgirl.get("name")), slots, as_int(catgirl.get("energy"), 0)
         )
+        notice = self._task_notices([catgirl])
+        if notice:
+            text = notice + "\n\n" + text
+        yield await self._reply(event, text)
 
     @filter.command("开始", alias={"start", "接任务"})
     async def neko_start(self, event: AstrMessageEvent, cat: str = "", slot: int = 0):
@@ -831,44 +875,22 @@ class NekoHanPlugin(Star):
             yield event.plain_result(fmt.error_box(exc.message))
             return
 
+        # 先把之前已完成的任务结算掉，让玩家看到到账
+        notice = fmt.task_notice(world.drain_task_notices(catgirl))
+
         ok, result = self._run(lambda: world.start_task(catgirl, slot))
         if not ok:
             yield event.plain_result(str(result))
             return
         await self._persist()
-        yield await self._reply(
-            event,
+        text = (
             f"🏃 {catgirl.get('name')} 开始「{result['name']}」！\n"
             f"　消耗精力 {result['energy']}　预计耗时 {result['minutes']} 分钟\n"
-            f"　完成后用「/领取 {catgirl.get('name')} {slot}」领取 "
-            f"{result['reward']} 金币。",
+            f"　{result['reward']} 金币会在任务完成后**自动到账**，不需要手动领取。"
         )
-
-    @filter.command("领取", alias={"claim", "领奖"})
-    async def neko_claim(self, event: AstrMessageEvent, cat: str = "", slot: int = 0):
-        """领取已完成任务的奖励，省略编号则领取全部可领任务"""
-        try:
-            player = self._player(event)
-            world = self._world()
-            catgirl = world.resolve_catgirl(player, cat)
-        except GameError as exc:
-            yield event.plain_result(fmt.error_box(exc.message))
-            return
-
-        ok, result = self._run(
-            lambda: world.claim_task(player, catgirl, slot if slot > 0 else None)
-        )
-        if not ok:
-            yield event.plain_result(str(result))
-            return
-        await self._persist()
-
-        total = sum(as_int(slot_data.get("reward"), 0) for slot_data in result)
-        names = "、".join(f"「{s.get('name')}」" for s in result)
-        yield event.plain_result(
-            f"🎉 {catgirl.get('name')} 完成了 {names}！\n"
-            f"　获得 {total} 金币，当前余额 {player.get('coins')} 金币。"
-        )
+        if notice:
+            text = notice + "\n\n" + text
+        yield await self._reply(event, text)
 
     # ---------------------------- 商城 ----------------------------
     @filter.command("商城", alias={"shop", "商店", "官方商城"})

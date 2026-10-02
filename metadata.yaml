@@ -2,7 +2,7 @@ name: neko_han # 插件唯一识别名
 display_name: Neko_Han 猫娘养成 # WebUI 中的展示名
 desc: 认养并养成你的猫娘：喂食与饮水、金币经济、每日任务、求婚结婚、官方商城与玩家交易市场，附带可自定义道具的 WebUI 面板。
 short_desc: 认养猫娘，喂饱她、陪她做任务、和她结婚，还能摆摊做生意。
-version: v1.0.0
+version: v1.1.0
 author: stalyx-meow
 repo: https://github.com/stalyx-meow/astrbot_plugin_neko_han
 astrbot_version: ">=4.16"
