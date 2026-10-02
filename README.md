@@ -350,6 +350,10 @@ python3 -m unittest discover -s tests -v
 5. **道具完全数据驱动**：新增道具不需要改代码，在面板里加一条即可，
    商城、任务奖励、市场、喂食逻辑都会自动识别。
 
+## 更新日志
+
+见 [CHANGELOG.md](CHANGELOG.md)。
+
 ## 许可
 
 本项目遵循 **GNU Affero General Public License v3.0**（AGPL-3.0），
