@@ -18,6 +18,7 @@ from typing import Any
 
 from .config import GameConfig
 from .defs import NAME_POOL
+from .duel import DuelMixin
 from .economy import EconomyMixin
 from .errors import GameError
 from .items import ItemRegistry
@@ -53,6 +54,7 @@ class NekoWorld(
     EconomyMixin,
     MarriageMixin,
     MarketMixin,
+    DuelMixin,
 ):
     """猫娘养成的全部游戏逻辑。"""
 
@@ -423,12 +425,14 @@ class NekoWorld(
             self.ensure_official_shop(today=today)
 
         expired = self.expire_proposals()
+        duel_events = self.expire_duels()
         self.store.state["meta"]["last_tick_day"] = today.isoformat()
 
         return {
             "date": today.isoformat(),
             "deaths": deaths,
             "task_done": task_events,
+            "duels": duel_events,
             "shop_refreshed": shop_refreshed,
             "proposals_expired": expired,
         }
@@ -464,6 +468,7 @@ class NekoWorld(
             "dead": len(catgirls) - alive,
             "marriages": len(self.store.marriages),
             "listings": len(self.store.listings),
+            "active_duels": len(self.active_duels()),
             "pending_proposals": sum(
                 1
                 for p in self.store.proposals
@@ -493,6 +498,9 @@ class NekoWorld(
             "energy": as_int(catgirl.get("energy"), 0),
             "flags": self.status_flags(catgirl),
             "partner": partner.get("name") if partner else None,
+            "duel": (
+                self.duel_of_catgirl(str(catgirl["id"])) or {}
+            ).get("id"),
             "stats": catgirl.get("stats") or {},
             # 已离世的猫娘不再生成每日任务
             "tasks": self.task_slots(catgirl) if alive else [],

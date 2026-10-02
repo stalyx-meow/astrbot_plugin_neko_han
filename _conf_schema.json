@@ -317,6 +317,92 @@
       }
     }
   },
+  "duel": {
+    "description": "决斗系统",
+    "type": "object",
+    "hint": "两只猫娘以金币为赌注猜数字，谁猜得离目标更近谁赢走奖池。",
+    "items": {
+      "enabled": {
+        "description": "启用决斗",
+        "type": "bool",
+        "default": true
+      },
+      "min_bet": {
+        "description": "最小赌注（金币）",
+        "type": "int",
+        "default": 10,
+        "slider": {
+          "min": 1,
+          "max": 1000,
+          "step": 1
+        }
+      },
+      "max_bet": {
+        "description": "最大赌注（金币）",
+        "type": "int",
+        "default": 10000,
+        "slider": {
+          "min": 100,
+          "max": 100000,
+          "step": 100
+        }
+      },
+      "number_min": {
+        "description": "目标数字下限",
+        "type": "int",
+        "default": 1,
+        "slider": {
+          "min": 0,
+          "max": 1000,
+          "step": 1
+        }
+      },
+      "number_max": {
+        "description": "目标数字上限",
+        "type": "int",
+        "default": 100,
+        "hint": "默认 1~100。范围越大越靠运气，越小越考验心理。",
+        "slider": {
+          "min": 10,
+          "max": 100000,
+          "step": 10
+        }
+      },
+      "invite_expire_minutes": {
+        "description": "战书有效期（分钟）",
+        "type": "int",
+        "default": 60,
+        "hint": "超时无人应战则自动取消并退回赌注。",
+        "slider": {
+          "min": 1,
+          "max": 1440,
+          "step": 1
+        }
+      },
+      "guess_timeout_hours": {
+        "description": "猜测阶段超时（小时）",
+        "type": "int",
+        "default": 24,
+        "hint": "超时仍未双方都猜完，则整局作废、双方赌注原样退回。",
+        "slider": {
+          "min": 1,
+          "max": 168,
+          "step": 1
+        }
+      },
+      "rake_percent": {
+        "description": "奖池抽成（%）",
+        "type": "float",
+        "default": 0.0,
+        "hint": "从奖池中扣除，用于回收金币。0 表示赢家拿走全部赌注。",
+        "slider": {
+          "min": 0,
+          "max": 30,
+          "step": 0.5
+        }
+      }
+    }
+  },
   "display": {
     "description": "显示与通知",
     "type": "object",
@@ -350,6 +436,11 @@
       },
       "notify_on_proposal": {
         "description": "收到求婚时主动通知对方主人",
+        "type": "bool",
+        "default": true
+      },
+      "notify_on_duel": {
+        "description": "收到战书时主动通知对方主人",
         "type": "bool",
         "default": true
       },

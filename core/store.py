@@ -30,6 +30,7 @@ def default_state() -> dict[str, Any]:
         "catgirls": {},  # catgirl_id -> catgirl dict
         "marriages": [],  # list[marriage dict]
         "proposals": [],  # list[proposal dict]
+        "duels": [],  # list[duel dict]
         "listings": [],  # list[market listing dict]
         "official_shop": {"date": "", "entries": []},
         "counters": {
@@ -37,6 +38,7 @@ def default_state() -> dict[str, Any]:
             "listing": 0,
             "proposal": 0,
             "marriage": 0,
+            "duel": 0,
         },
         "meta": {"last_tick_day": ""},
     }
@@ -145,6 +147,10 @@ class Store:
     @property
     def proposals(self) -> list[dict[str, Any]]:
         return self.state["proposals"]
+
+    @property
+    def duels(self) -> list[dict[str, Any]]:
+        return self.state["duels"]
 
     @property
     def listings(self) -> list[dict[str, Any]]:

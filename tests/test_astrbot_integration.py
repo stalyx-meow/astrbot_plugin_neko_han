@@ -115,13 +115,14 @@ class FakeEvent:
         name: str = "阿猫",
         platform: str = "aiocqhttp",
         admin: bool = False,
+        umo: str = "",
     ) -> None:
         self.message_str = message
         self._uid = uid
         self._name = name
         self._platform = platform
         self.role = "admin" if admin else "member"
-        self.unified_msg_origin = f"{platform}:GroupMessage:888"
+        self.unified_msg_origin = umo or f"{platform}:GroupMessage:888"
         self.sent: list[str] = []
         self.stopped = False
 
@@ -317,6 +318,12 @@ class TestCommandRegistration(PluginIntegrationBase):
             "拒绝",
             "伴侣",
             "离婚",
+            "决斗",
+            "决斗列表",
+            "接受决斗",
+            "拒绝决斗",
+            "取消决斗",
+            "猜",
             "刷新商城",
             "发放",
         ]
@@ -942,6 +949,164 @@ class TestCommandBehaviour(PluginIntegrationBase):
         self.call("neko_adopt", self.event(platform="aiocqhttp"), "企鹅猫")
         out = self.call("neko_list", self.event(platform="telegram", uid="1001"))
         self.assertIn("还没有猫娘", out[0])
+
+
+# ======================================================================
+# 决斗系统（指令层）
+# ======================================================================
+class TestDuelCommands(PluginIntegrationBase):
+    def _pair(self, coins: int = 1000):
+        """造两位玩家 + 各一只猫娘。"""
+        a_ev = self.event(uid="9001", name="甲", umo="aiocqhttp:GroupMessage:111")
+        b_ev = self.event(uid="9002", name="乙", umo="aiocqhttp:GroupMessage:222")
+        self.call("neko_adopt", a_ev, "阿花")
+        self.call("neko_adopt", b_ev, "阿草")
+        a = self.plugin.world.get_player("aiocqhttp:9001")
+        b = self.plugin.world.get_player("aiocqhttp:9002")
+        a["coins"] = b["coins"] = coins
+        return a_ev, b_ev, a, b
+
+    def _start(self, bet: int = 100):
+        a_ev, b_ev, a, b = self._pair()
+        self.call("neko_duel", a_ev, "阿花", "阿草", bet)
+        self.call("neko_accept_duel", b_ev, "D1")
+        return a_ev, b_ev, a, b
+
+    def test_full_duel_flow(self):
+        a_ev, b_ev, a, b = self._pair()
+
+        out = self.call("neko_duel", a_ev, "阿花", "阿草", 100)
+        self.assertIn("战书已送出", out[0])
+        self.assertIn("D1", out[0])
+        self.assertEqual(a["coins"], 900, "赌注应立即托管")
+
+        out = self.call("neko_duel_list", b_ev)
+        self.assertIn("等待你回应的战书", out[0])
+        self.assertIn("阿花", out[0])
+
+        out = self.call("neko_accept_duel", b_ev, "D1")
+        self.assertIn("决斗开始", out[0])
+        self.assertIn("建议私聊", out[0])
+        self.assertEqual(b["coins"], 900)
+
+        # 双方提交猜测
+        self.plugin.world.store.duels[0]["target"] = 50
+        out = self.call("neko_guess", a_ev, "45")
+        self.assertIn("已收到", out[0])
+        out = self.call("neko_guess", b_ev, "95")
+        self.assertIn("揭晓", out[0])
+        self.assertIn("目标数字", out[0])
+        self.assertEqual(self.plugin.world.store.duels[0]["winner"], a["key"])
+        self.assertEqual(a["coins"], 1100)
+
+    def test_guess_reply_never_leaks_the_number(self):
+        """关键安全性：提交猜测的回复不能回显数字，否则对手稳赢。"""
+        a_ev, b_ev, a, b = self._start()
+        self.plugin.world.store.duels[0]["target"] = 50
+
+        out = self.call("neko_guess", a_ev, "77")
+        self.assertEqual(len(out), 1)
+        self.assertNotIn("77", out[0], "回复里出现了猜测数字")
+        self.assertIn("不会公开显示", out[0])
+
+        # 列表也不能泄露：未猜方不应看到对手的数字或目标
+        out = self.call("neko_duel_list", b_ev)
+        self.assertNotIn("77", out[0])
+        self.assertNotIn("50", out[0])
+        self.assertIn("阿花 已猜", out[0])
+
+    def test_duel_list_hides_target_until_reveal(self):
+        a_ev, b_ev, a, b = self._start()
+        self.plugin.world.store.duels[0]["target"] = 88
+        listing = self.call("neko_duel_list", a_ev)
+        self.assertNotIn("88", listing[0])
+        self.assertIn("双方都还没猜", listing[0])
+
+    def test_two_guesses_reveal_and_pay(self):
+        a_ev, b_ev, a, b = self._start(200)
+        duel = self.plugin.world.store.duels[0]
+        duel["target"] = 30
+        self.call("neko_guess", a_ev, "10")   # 距离 20
+        out = self.call("neko_guess", b_ev, "31")  # 距离 1
+        self.assertIn("揭晓", out[0])
+        self.assertIn("阿草", out[0])
+        self.assertEqual(b["coins"], 800 + 400)
+
+    def test_decline_refunds(self):
+        a_ev, b_ev, a, b = self._pair()
+        self.call("neko_duel", a_ev, "阿花", "阿草", 150)
+        self.assertEqual(a["coins"], 850)
+        out = self.call("neko_reject_duel", b_ev, "D1")
+        self.assertIn("已拒绝", out[0])
+        self.assertEqual(a["coins"], 1000)
+
+    def test_cancel_refunds(self):
+        a_ev, b_ev, a, b = self._pair()
+        self.call("neko_duel", a_ev, "阿花", "阿草", 150)
+        out = self.call("neko_cancel_duel", a_ev, "D1")
+        self.assertIn("已撤回", out[0])
+        self.assertEqual(a["coins"], 1000)
+
+    def test_duel_usage_errors(self):
+        a_ev, b_ev, a, b = self._pair()
+        out = self.call("neko_duel", a_ev)
+        self.assertIn("😿", out[0])
+        out = self.call("neko_duel", a_ev, "阿花", "阿草", 0)
+        self.assertIn("😿", out[0])
+        out = self.call("neko_duel", a_ev, "阿花", "阿草", 999999)
+        self.assertIn("😿", out[0])
+        out = self.call("neko_accept_duel", b_ev)
+        self.assertIn("😿", out[0])
+        out = self.call("neko_reject_duel", b_ev, "")
+        self.assertIn("😿", out[0])
+        out = self.call("neko_cancel_duel", a_ev, "")
+        self.assertIn("😿", out[0])
+
+    def test_guess_argument_forms(self):
+        """/猜 42 与 /猜 D1 42 两种写法都要支持。"""
+        a_ev, b_ev, a, b = self._start()
+        self.plugin.world.store.duels[0]["target"] = 50
+        # 一把直接给数字
+        out = self.call("neko_guess", a_ev, "42", 0)
+        self.assertIn("已收到", out[0])
+        # 带编号 + 数字
+        out = self.call("neko_guess", b_ev, "D1", 50)
+        self.assertIn("揭晓", out[0])
+
+    def test_guess_without_duel(self):
+        a_ev, b_ev, a, b = self._pair()
+        out = self.call("neko_guess", a_ev, "42", 0)
+        self.assertIn("😿", out[0])
+        out = self.call("neko_guess", a_ev, "abc", 0)
+        self.assertIn("😿", out[0])
+
+    def test_guess_out_of_range_error(self):
+        a_ev, b_ev, a, b = self._start()
+        out = self.call("neko_guess", a_ev, "999", 0)
+        self.assertIn("😿", out[0])
+        self.assertIn("1 ~ 100", out[0])
+
+    def test_duel_list_empty(self):
+        out = self.call("neko_duel_list", self.event(uid="9100", name="路人"))
+        self.assertIn("没有进行中的决斗", out[0])
+        self.assertIn("/决斗", out[0])
+
+    def test_duel_notify_opponent(self):
+        """下战书应主动通知对方主人（若知道其会话）。"""
+        a_ev, b_ev, a, b = self._pair()
+        # 先让乙发一条消息，记录其会话
+        self.call("neko_wallet", b_ev)
+        self.call("neko_duel", a_ev, "阿花", "阿草", 100)
+        pushed = [msg for _umo, msg in self.context.sent_messages]
+        self.assertTrue(
+            any("战书" in m for m in pushed),
+            f"未发送战书通知: {pushed}",
+        )
+
+    def test_help_mentions_duel(self):
+        out = self.call("neko_help", self.event())
+        self.assertIn("/决斗", out[0])
+        self.assertIn("/猜", out[0])
 
 
 # ======================================================================

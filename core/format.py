@@ -320,6 +320,104 @@ def proposal_list(rows: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def duel_list(
+    incoming: list[dict[str, Any]],
+    outgoing: list[dict[str, Any]],
+    awaiting: list[dict[str, Any]],
+    playing: list[dict[str, Any]],
+    number_range: str,
+) -> str:
+    """渲染 /决斗列表：待应战、我方邀约、待猜测、进行中。"""
+    if not (incoming or outgoing or awaiting or playing):
+        return (
+            "⚔️ 你现在没有进行中的决斗。\n"
+            f"发起方式：「/决斗 <我的猫娘> <对方猫娘> <赌注>」\n"
+            f"目标数字范围：{number_range}"
+        )
+
+    lines: list[str] = []
+    if incoming:
+        lines.append("📨 等待你回应的战书：")
+        for duel in incoming:
+            lines.append(
+                f"　[{duel.get('id')}] {duel.get('challenger_cat_name')}"
+                f"（{duel.get('challenger_name')}）→ {duel.get('opponent_cat_name')}"
+                f"　赌注 {duel.get('bet')} 金币"
+            )
+        lines.append("　用「/接受决斗 <编号>」应战，「/拒绝决斗 <编号>」拒绝。")
+
+    if awaiting:
+        lines.append("")
+        lines.append("🎯 轮到你猜数字了：")
+        for duel in awaiting:
+            lines.append(
+                f"　[{duel.get('id')}] {duel.get('challenger_cat_name')}"
+                f" vs {duel.get('opponent_cat_name')}"
+                f"　赌注 {duel.get('bet')} 金币　范围 {number_range}"
+            )
+        lines.append("　用「/猜 <数字>」提交；有多场时用「/猜 <编号> <数字>」。")
+        lines.append("　⚠️ 建议**私聊**机器人提交，避免被对手看到。")
+
+    if playing:
+        lines.append("")
+        lines.append("⚔️ 进行中的决斗：")
+        for duel in playing:
+            marks = []
+            if duel.get("challenger_guessed"):
+                marks.append(f"{duel.get('challenger_cat_name')} 已猜")
+            if duel.get("opponent_guessed"):
+                marks.append(f"{duel.get('opponent_cat_name')} 已猜")
+            progress = "、".join(marks) if marks else "双方都还没猜"
+            lines.append(
+                f"　[{duel.get('id')}] {duel.get('challenger_cat_name')}"
+                f" vs {duel.get('opponent_cat_name')}"
+                f"　赌注 {duel.get('bet')} 金币　（{progress}）"
+            )
+
+    if outgoing:
+        lines.append("")
+        lines.append("📤 你发出、还没被回应的战书：")
+        for duel in outgoing:
+            lines.append(
+                f"　[{duel.get('id')}] → {duel.get('opponent_cat_name')}"
+                f"　赌注 {duel.get('bet')} 金币"
+            )
+        lines.append("　用「/取消决斗 <编号>」撤回。")
+
+    return "\n".join(lines)
+
+
+def duel_result(snapshot: dict[str, Any]) -> str:
+    """渲染一局决斗的揭晓结果。"""
+    lines = [f"⚔️ 决斗 {snapshot.get('id')} 揭晓！"]
+    lines.append(
+        f"　{snapshot.get('challenger_cat_name')}（{snapshot.get('challenger_name')}）"
+        f" 猜了 {snapshot.get('challenger_guess')}"
+        f"，与目标相差 {snapshot.get('challenger_dist')}"
+    )
+    lines.append(
+        f"　{snapshot.get('opponent_cat_name')} 猜了 {snapshot.get('opponent_guess')}"
+        f"，与目标相差 {snapshot.get('opponent_dist')}"
+    )
+    lines.append(f"　🎲 目标数字：**{snapshot.get('target')}**")
+
+    if snapshot.get("draw"):
+        lines.append("　🤝 双方距离相同，平局！赌注已各自退回。")
+        return "\n".join(lines)
+
+    winner_cat = (
+        snapshot.get("challenger_cat_name")
+        if snapshot.get("winner") == snapshot.get("challenger")
+        else snapshot.get("opponent_cat_name")
+    )
+    lines.append(
+        f"　🏆 获胜：{winner_cat}　赢走 {snapshot.get('prize')} 金币"
+    )
+    if snapshot.get("rake"):
+        lines.append(f"　（奖池 {snapshot.get('pot')}，抽成 {snapshot.get('rake')}）")
+    return "\n".join(lines)
+
+
 def error_box(message: str) -> str:
     """统一的错误提示格式。"""
     return f"😿 {message}"
@@ -335,6 +433,8 @@ __all__ = [
     "task_progress_line",
     "progress_bar",
     "task_notice",
+    "duel_list",
+    "duel_result",
     "shop_list",
     "inventory_list",
     "market_list",

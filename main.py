@@ -61,6 +61,14 @@ HELP_TEXT = """🐱 Neko_Han 猫娘养成 · 指令一览
   /任务 <猫娘>         查看今天的任务
   /开始 <猫娘> <编号>  开始任务（消耗精力，奖励完成后自动到账）
 
+【决斗】
+  /决斗 <我的猫娘> <对方猫娘> <赌注>   下战书（赌注立即托管）
+  /决斗列表            看待应战的战书、待猜的决斗与进行中的决斗
+  /接受决斗 <编号> / /拒绝决斗 <编号>
+  /猜 <数字>           提交猜测；有多场时用「/猜 <编号> <数字>」
+  /取消决斗 <编号>     撤回自己发出的战书
+  （双方各猜一次，谁离目标数字更近谁赢走奖池；建议私聊提交猜测）
+
 【商城与交易】
   /商城               官方商城（每天刷新，价格浮动）
   /购买 <道具> [数量]  从官方商城购买
@@ -117,6 +125,12 @@ _COMMAND_NAMES = frozenset(
         "拒绝", "reject",
         "伴侣", "couple", "结婚",
         "离婚", "divorce",
+        "决斗", "duel", "下战书",
+        "接受决斗", "acceptduel", "应战",
+        "拒绝决斗", "rejectduel", "拒战",
+        "取消决斗", "cancelduel", "收战书",
+        "猜", "guess",
+        "决斗列表", "duels", "战书",
         "刷新商城", "refreshshop",
         "发放", "grant",
     }
@@ -332,6 +346,7 @@ class NekoHanPlugin(Star):
             return
         await self._notify_deaths(result.get("deaths") or [])
         await self._notify_task_done(result.get("task_done") or [])
+        await self._notify_duels(result.get("duels") or [])
 
     async def _notify_deaths(self, deaths: list[dict[str, Any]]) -> None:
         """通知猫娘离世。"""
@@ -369,6 +384,22 @@ class NekoHanPlugin(Star):
             ]
             lines.append(f"　本次共 +{total} 金币")
             await self._push(umo, "\n".join(lines), "任务完成通知")
+
+    async def _notify_duels(self, events: list[dict[str, Any]]) -> None:
+        """通知决斗超时/作废（赌注已退回）。"""
+        if not events:
+            return
+        seen: set[tuple[str, str]] = set()
+        for event in events:
+            owner = str(event.get("owner") or "")
+            message = str(event.get("message") or "")
+            key = (owner, str(event.get("duel_id") or ""))
+            if not owner or not message or key in seen:
+                continue
+            seen.add(key)
+            umo = self._player_umo(owner)
+            if umo:
+                await self._push(umo, message, "决斗超时通知")
 
     def _player_umo(self, owner: Any) -> str:
         """取玩家最后一次发言的会话标识（用于主动推送）。"""
@@ -1065,6 +1096,212 @@ class NekoHanPlugin(Star):
         yield event.plain_result(
             f"📦 已下架 {item.get('emoji', '')}{item.get('name', '商品')}"
             f" ×{result['qty']}，道具已退回仓库。"
+        )
+
+    # ---------------------------- 决斗 ----------------------------
+    @filter.command("决斗", alias={"duel", "下战书"})
+    async def neko_duel(
+        self,
+        event: AstrMessageEvent,
+        my_cat: str = "",
+        target: str = "",
+        bet: int = 0,
+    ):
+        """向别人的猫娘下战书，例如「/决斗 小奶油 橘子 100」"""
+        if not target or bet <= 0:
+            low, high = self._world()._duel_limits()
+            yield event.plain_result(
+                fmt.error_box(
+                    "用法：「/决斗 <我的猫娘> <对方猫娘> <赌注>」，"
+                    f"例如「/决斗 小奶油 橘子 100」。\n"
+                    f"　赌注范围 {low} ~ {high} 金币，"
+                    f"目标数字范围 {self._world().duel_range_text()}。"
+                )
+            )
+            return
+        try:
+            player = self._player(event)
+            world = self._world()
+            mine = world.resolve_catgirl(player, my_cat)
+        except GameError as exc:
+            yield event.plain_result(fmt.error_box(exc.message))
+            return
+
+        ok, result = self._run(lambda: world.invite_duel(player, mine, target, bet))
+        if not ok:
+            yield event.plain_result(str(result))
+            return
+        await self._persist()
+        duel, target_cat = result
+
+        # 主动通知对方主人
+        if self._cfg_bool("display.notify_on_duel", True):
+            umo = self._player_umo(target_cat.get("owner"))
+            if umo and umo != (event.unified_msg_origin or ""):
+                await self._push(
+                    umo,
+                    f"⚔️ {duel.get('challenger_name')} 的猫娘"
+                    f"「{mine.get('name')}」向你的猫娘「{target_cat.get('name')}」"
+                    f"下了战书，赌注 {bet} 金币！\n"
+                    f"用「/接受决斗 {duel['id']}」应战，"
+                    f"「/拒绝决斗 {duel['id']}」拒绝。",
+                    "决斗邀请通知",
+                )
+
+        yield await self._reply(
+            event,
+            f"⚔️ 战书已送出！「{mine.get('name')}」 → "
+            f"「{target_cat.get('name')}」（编号 {duel['id']}）\n"
+            f"　赌注 {bet} 金币已托管，目标数字范围 "
+            f"{world.duel_range_text()}\n"
+            f"　等对方主人用「/接受决斗 {duel['id']}」应战。",
+        )
+
+    @filter.command("接受决斗", alias={"acceptduel", "应战"})
+    async def neko_accept_duel(self, event: AstrMessageEvent, duel_id: str = ""):
+        """接受决斗，例如「/接受决斗 D1」"""
+        if not duel_id:
+            yield event.plain_result(fmt.error_box("请指定决斗编号，例如「/接受决斗 D1」。"))
+            return
+        try:
+            player = self._player(event)
+            world = self._world()
+        except GameError as exc:
+            yield event.plain_result(fmt.error_box(exc.message))
+            return
+
+        ok, result = self._run(lambda: world.accept_duel(player, duel_id))
+        if not ok:
+            yield event.plain_result(str(result))
+            return
+        await self._persist()
+        duel = result
+        yield await self._reply(
+            event,
+            f"⚔️ 决斗开始！{duel.get('challenger_cat_name')} vs "
+            f"{duel.get('opponent_cat_name')}　奖池 {duel.get('pot')} 金币\n"
+            f"　目标数字范围 {world.duel_range_text()}，双方各猜一次，"
+            f"猜得更接近的人赢。\n"
+            f"　👉 请两位主人发送「/猜 <数字>」提交猜测。\n"
+            f"　⚠️ **建议私聊机器人提交**，在群里发会被对手看到。",
+        )
+
+    @filter.command("拒绝决斗", alias={"rejectduel", "拒战"})
+    async def neko_reject_duel(self, event: AstrMessageEvent, duel_id: str = ""):
+        """拒绝决斗并退回对方赌注，例如「/拒绝决斗 D1」"""
+        if not duel_id:
+            yield event.plain_result(fmt.error_box("请指定决斗编号，例如「/拒绝决斗 D1」。"))
+            return
+        try:
+            player = self._player(event)
+            world = self._world()
+        except GameError as exc:
+            yield event.plain_result(fmt.error_box(exc.message))
+            return
+
+        ok, result = self._run(lambda: world.decline_duel(player, duel_id))
+        if not ok:
+            yield event.plain_result(str(result))
+            return
+        await self._persist()
+        yield event.plain_result(
+            f"🛡️ 已拒绝「{result.get('challenger_cat_name')}」的战书，"
+            f"{result.get('bet')} 金币赌注已退还对方。"
+        )
+
+    @filter.command("取消决斗", alias={"cancelduel", "收战书"})
+    async def neko_cancel_duel(self, event: AstrMessageEvent, duel_id: str = ""):
+        """撤回自己发出、还没被接受的战书，例如「/取消决斗 D1」"""
+        if not duel_id:
+            yield event.plain_result(fmt.error_box("请指定决斗编号，例如「/取消决斗 D1」。"))
+            return
+        try:
+            player = self._player(event)
+            world = self._world()
+        except GameError as exc:
+            yield event.plain_result(fmt.error_box(exc.message))
+            return
+
+        ok, result = self._run(lambda: world.cancel_duel(player, duel_id))
+        if not ok:
+            yield event.plain_result(str(result))
+            return
+        await self._persist()
+        yield event.plain_result(
+            f"📥 已撤回战书（{result.get('id')}），"
+            f"{result.get('bet')} 金币赌注已退回你的钱包。"
+        )
+
+    @filter.command("猜", alias={"guess"})
+    async def neko_guess(self, event: AstrMessageEvent, first: str = "", second: int = 0):
+        """提交决斗猜测，例如「/猜 42」或「/猜 D1 42」"""
+        if second:
+            duel_id, value = first, second
+        elif first.isdigit():
+            duel_id, value = "", int(first)
+        else:
+            yield event.plain_result(
+                fmt.error_box(
+                    "用法：「/猜 <数字>」，同时有多场时用「/猜 <编号> <数字>」，"
+                    "例如「/猜 42」或「/猜 D1 42」。"
+                )
+            )
+            return
+        try:
+            player = self._player(event)
+            world = self._world()
+        except GameError as exc:
+            yield event.plain_result(fmt.error_box(exc.message))
+            return
+
+        ok, result = self._run(lambda: world.submit_guess(player, value, duel_id))
+        if not ok:
+            yield event.plain_result(str(result))
+            return
+        await self._persist()
+        duel = result
+
+        if duel.get("status") == "finished":
+            # 双方都猜完：揭晓
+            snapshot = world.duel_snapshot(duel, player["key"])
+            yield await self._reply(event, fmt.duel_result(snapshot))
+            return
+
+        # 只有一方猜完：绝不回显数字，避免泄露给对手
+        yield event.plain_result(
+            f"✅ 已收到你对决斗 {duel.get('id')} 的猜测（不会公开显示）。\n"
+            f"　等对手也猜完后一起揭晓。"
+        )
+
+    @filter.command("决斗列表", alias={"duels", "战书"})
+    async def neko_duel_list(self, event: AstrMessageEvent):
+        """查看待应战的战书、待猜测的决斗与进行中的决斗"""
+        try:
+            player = self._player(event)
+            world = self._world()
+            world.expire_duels()
+            incoming = world.duels_to_accept(player["key"])
+            awaiting = world.duels_awaiting_guess(player["key"])
+            playing = [
+                world.duel_snapshot(duel, player["key"])
+                for duel in world.duels_of_player(player["key"])
+                if duel.get("status") == "guessing"
+            ]
+            outgoing = [
+                duel
+                for duel in world.duels_of_player(player["key"])
+                if duel.get("status") == "pending"
+                and duel.get("challenger") == player["key"]
+            ]
+        except GameError as exc:
+            yield event.plain_result(fmt.error_box(exc.message))
+            return
+        await self._persist()
+        yield await self._reply(
+            event,
+            fmt.duel_list(
+                incoming, outgoing, awaiting, playing, world.duel_range_text()
+            ),
         )
 
     # ---------------------------- 结婚 ----------------------------

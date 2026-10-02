@@ -927,6 +927,361 @@ class TestMarriage(WorldTestCase):
 
 
 # ======================================================================
+# 决斗
+# ======================================================================
+class TestDuel(WorldTestCase):
+    def _pair(self, coins: int = 1000):
+        """两位玩家，各有 1 只猫娘，并给足金币。"""
+        a = self.make_player("8001", "甲")
+        b = self.make_player("8002", "乙")
+        a["coins"] = coins
+        b["coins"] = coins
+        return a, self.make_catgirl(a, "阿花"), b, self.make_catgirl(b, "阿草")
+
+    def _start(self, bet: int = 100):
+        """走完"下战书 → 应战"，返回 (a, cat_a, b, cat_b, duel)。"""
+        a, cat_a, b, cat_b = self._pair()
+        duel, _ = self.world.invite_duel(a, cat_a, "阿草", bet)
+        self.world.accept_duel(b, duel["id"])
+        return a, cat_a, b, cat_b, duel
+
+    # ---------------------------- 托管与状态 ----------------------------
+    def test_invite_escrows_challenger_bet(self):
+        a, cat_a, b, cat_b = self._pair()
+        duel, target = self.world.invite_duel(a, cat_a, "阿草", 150)
+        self.assertEqual(a["coins"], 850)
+        self.assertEqual(b["coins"], 1000)
+        self.assertEqual(duel["status"], "pending")
+        self.assertEqual(duel["bet"], 150)
+        self.assertIsNone(duel["target"])
+        self.assertEqual(target["id"], cat_b["id"])
+        self.assertEqual(duel["id"], "D1")
+
+    def test_accept_generates_target_and_escrows(self):
+        a, cat_a, b, cat_b = self._pair()
+        duel, _ = self.world.invite_duel(a, cat_a, "阿草", 100)
+        self.world.accept_duel(b, duel["id"])
+        self.assertEqual(b["coins"], 900)
+        self.assertEqual(duel["status"], "guessing")
+        low, high = 1, 100
+        self.assertGreaterEqual(duel["target"], low)
+        self.assertLessEqual(duel["target"], high)
+
+    def test_target_respects_configured_range(self):
+        world = make_world({"duel": {"number_min": 500, "number_max": 600}})
+        p1, _ = world.ensure_player("aiocqhttp", "81", "甲", "")
+        p2, _ = world.ensure_player("aiocqhttp", "82", "乙", "")
+        c1, c2 = world.adopt(p1, "甲猫"), world.adopt(p2, "乙猫")
+        duel, _ = world.invite_duel(p1, c1, "乙猫", 10)
+        world.accept_duel(p2, duel["id"])
+        self.assertGreaterEqual(duel["target"], 500)
+        self.assertLessEqual(duel["target"], 600)
+
+    # ---------------------------- 胜负结算 ----------------------------
+    def test_closer_guess_wins_pot(self):
+        a, cat_a, b, cat_b, duel = self._start(100)
+        duel["target"] = 50
+        before_b = b["coins"]
+        self.world.submit_guess(a, 40)          # 距离 10
+        self.world.submit_guess(b, 90)          # 距离 40
+        self.assertEqual(duel["status"], "finished")
+        self.assertEqual(duel["winner"], a["key"])
+        # 下注后剩 900，赢走奖池 200 -> 1100（净赚一个赌注）
+        self.assertEqual(a["coins"], 1100)
+        self.assertEqual(b["coins"], before_b)
+
+    def test_second_player_can_win(self):
+        a, cat_a, b, cat_b, duel = self._start(100)
+        duel["target"] = 50
+        self.world.submit_guess(a, 10)          # 距离 40
+        self.world.submit_guess(b, 55)          # 距离 5
+        self.assertEqual(duel["winner"], b["key"])
+        self.assertEqual(b["coins"], 1100)
+
+    def test_tie_refunds_both(self):
+        a, cat_a, b, cat_b, duel = self._start(100)
+        duel["target"] = 50
+        self.world.submit_guess(a, 40)          # 距离 10
+        self.world.submit_guess(b, 60)          # 距离 10
+        self.assertEqual(duel["status"], "finished")
+        self.assertIsNone(duel["winner"])
+        # 各自退回本金
+        self.assertEqual(a["coins"], 1000)
+        self.assertEqual(b["coins"], 1000)
+
+    def test_same_guess_is_a_draw(self):
+        a, cat_a, b, cat_b, duel = self._start(50)
+        duel["target"] = 7
+        self.world.submit_guess(a, 7)
+        self.world.submit_guess(b, 7)
+        self.assertIsNone(duel["winner"])
+        self.assertEqual(a["coins"], 1000)
+        self.assertEqual(b["coins"], 1000)
+
+    def test_rake_is_deducted_from_pot(self):
+        world = make_world({"duel": {"rake_percent": 10.0}})
+        a, _ = world.ensure_player("aiocqhttp", "83", "甲", "")
+        b, _ = world.ensure_player("aiocqhttp", "84", "乙", "")
+        a["coins"] = b["coins"] = 1000
+        c1, c2 = world.adopt(a, "甲猫"), world.adopt(b, "乙猫")
+        duel, _ = world.invite_duel(a, c1, "乙猫", 100)
+        world.accept_duel(b, duel["id"])
+        duel["target"] = 50
+        world.submit_guess(a, 50)
+        world.submit_guess(b, 10)
+        # 奖池 200，抽成 10% = 20，赢家拿 180
+        self.assertEqual(duel["prize"], 180)
+        self.assertEqual(duel["rake"], 20)
+        self.assertEqual(a["coins"], 1000 - 100 + 180)
+
+    def test_before_both_guess_nothing_is_paid(self):
+        a, cat_a, b, cat_b, duel = self._start(100)
+        duel["target"] = 50
+        self.world.submit_guess(a, 50)
+        self.assertEqual(duel["status"], "guessing")
+        self.assertEqual(a["coins"], 900)
+        self.assertEqual(b["coins"], 900)
+
+    # ---------------------------- 保密性（关键） ----------------------------
+    def test_snapshot_hides_target_and_guesses_until_finished(self):
+        """未揭晓前，快照绝不能泄露目标数字或对手猜测。"""
+        a, cat_a, b, cat_b, duel = self._start(100)
+        duel["target"] = 42
+        self.world.submit_guess(a, 41)
+
+        for viewer in (a["key"], b["key"], "someone-else"):
+            snap = self.world.duel_snapshot(duel, viewer)
+            self.assertNotIn("target", snap, f"{viewer} 不应看到目标数字")
+            self.assertNotIn("challenger_guess", snap)
+            self.assertNotIn("opponent_guess", snap)
+        # 只暴露"谁猜了"
+        snap = self.world.duel_snapshot(duel, a["key"])
+        self.assertTrue(snap["challenger_guessed"])
+        self.assertFalse(snap["opponent_guessed"])
+        self.assertTrue(snap["my_guess_done"])
+
+    def test_snapshot_reveals_after_finished(self):
+        a, cat_a, b, cat_b, duel = self._start(100)
+        duel["target"] = 42
+        self.world.submit_guess(a, 41)
+        self.world.submit_guess(b, 80)
+        snap = self.world.duel_snapshot(duel, a["key"])
+        self.assertEqual(snap["target"], 42)
+        self.assertEqual(snap["challenger_guess"], 41)
+        self.assertEqual(snap["opponent_guess"], 80)
+        self.assertEqual(snap["challenger_dist"], 1)
+        self.assertEqual(snap["opponent_dist"], 38)
+
+    # ---------------------------- 校验 ----------------------------
+    def test_bet_limits(self):
+        a, cat_a, b, cat_b = self._pair()
+        world = make_world({"duel": {"min_bet": 50, "max_bet": 500}})
+        p1, _ = world.ensure_player("aiocqhttp", "85", "甲", "")
+        p2, _ = world.ensure_player("aiocqhttp", "86", "乙", "")
+        c1, c2 = world.adopt(p1, "甲猫"), world.adopt(p2, "乙猫")
+        with self.assertRaises(GameError):
+            world.invite_duel(p1, c1, "乙猫", 10)     # 低于下限
+        with self.assertRaises(GameError):
+            world.invite_duel(p1, c1, "乙猫", 9999)   # 高于上限
+        world.invite_duel(p1, c1, "乙猫", 50)         # 边界可用
+
+    def test_insufficient_coins_on_invite(self):
+        a, cat_a, b, cat_b = self._pair(coins=50)
+        with self.assertRaises(GameError):
+            self.world.invite_duel(a, cat_a, "阿草", 100)
+
+    def test_insufficient_coins_on_accept(self):
+        a, cat_a, b, cat_b = self._pair()
+        b["coins"] = 10
+        duel, _ = self.world.invite_duel(a, cat_a, "阿草", 100)
+        with self.assertRaises(GameError):
+            self.world.accept_duel(b, duel["id"])
+        # 接受失败要退回挑战方赌注
+        self.assertEqual(a["coins"], 900)
+        self.assertEqual(duel["status"], "pending")
+
+    def test_cannot_duel_own_or_self(self):
+        a, cat_a, b, cat_b = self._pair()
+        with self.assertRaises(GameError):
+            self.world.invite_duel(a, cat_a, "阿花", 100)      # 自己
+        second = self.world.adopt(a, "阿花二号")
+        with self.assertRaises(GameError):
+            self.world.invite_duel(a, cat_a, "阿花二号", 100)  # 同一主人的两只
+
+    def test_dead_catgirl_cannot_duel(self):
+        a, cat_a, b, cat_b = self._pair()
+        self.world._kill_catgirl(cat_b, "测试")
+        with self.assertRaises(GameError):
+            self.world.invite_duel(a, cat_a, "阿草", 100)
+        cat_b["alive"] = True
+        duel, _ = self.world.invite_duel(a, cat_a, "阿草", 100)
+        self.world._kill_catgirl(cat_a, "测试")
+        with self.assertRaises(GameError):
+            self.world.accept_duel(b, duel["id"])
+
+    def test_catgirl_cannot_be_in_two_duels(self):
+        a, cat_a, b, cat_b = self._pair()
+        c = self.make_player("8003", "丙")
+        c["coins"] = 1000
+        cat_c = self.make_catgirl(c, "阿树")
+        self.world.invite_duel(a, cat_a, "阿草", 100)
+        with self.assertRaises(GameError):
+            self.world.invite_duel(c, cat_c, "阿草", 100)
+        with self.assertRaises(GameError):
+            self.world.invite_duel(a, cat_a, "阿树", 100)
+
+    def test_duplicate_invite_rejected(self):
+        a, cat_a, b, cat_b = self._pair()
+        self.world.invite_duel(a, cat_a, "阿草", 100)
+        cat_a2 = self.world.adopt(a, "阿花二号")
+        with self.assertRaises(GameError):
+            self.world.invite_duel(a, cat_a2, "阿草", 100)
+
+    def test_guess_out_of_range_rejected(self):
+        a, cat_a, b, cat_b, duel = self._start(100)
+        with self.assertRaises(GameError):
+            self.world.submit_guess(a, 0)
+        with self.assertRaises(GameError):
+            self.world.submit_guess(a, 999)
+        self.assertIsNone(duel["challenger_guess"])
+
+    def test_cannot_guess_twice(self):
+        a, cat_a, b, cat_b, duel = self._start(100)
+        self.world.submit_guess(a, 50)
+        with self.assertRaises(GameError):
+            self.world.submit_guess(a, 60)
+        self.assertEqual(duel["challenger_guess"], 50)
+
+    def test_only_participants_can_guess(self):
+        a, cat_a, b, cat_b, duel = self._start(100)
+        c = self.make_player("8004", "丁")
+        with self.assertRaises(GameError):
+            self.world.submit_guess(c, 50)
+
+    def test_accept_requires_target_player(self):
+        a, cat_a, b, cat_b = self._pair()
+        c = self.make_player("8005", "戊")
+        duel, _ = self.world.invite_duel(a, cat_a, "阿草", 100)
+        with self.assertRaises(GameError):
+            self.world.accept_duel(c, duel["id"])
+        with self.assertRaises(GameError):
+            self.world.accept_duel(a, duel["id"])   # 发起者不能自己应战
+        with self.assertRaises(GameError):
+            self.world.decline_duel(a, duel["id"])
+
+    # ---------------------------- 拒绝 / 撤回 ----------------------------
+    def test_decline_refunds_challenger(self):
+        a, cat_a, b, cat_b = self._pair()
+        duel, _ = self.world.invite_duel(a, cat_a, "阿草", 200)
+        self.assertEqual(a["coins"], 800)
+        self.world.decline_duel(b, duel["id"])
+        self.assertEqual(duel["status"], "declined")
+        self.assertEqual(a["coins"], 1000)
+
+    def test_cancel_refunds_challenger(self):
+        a, cat_a, b, cat_b = self._pair()
+        duel, _ = self.world.invite_duel(a, cat_a, "阿草", 200)
+        self.world.cancel_duel(a, duel["id"])
+        self.assertEqual(duel["status"], "cancelled")
+        self.assertEqual(a["coins"], 1000)
+
+    def test_cannot_cancel_after_accept(self):
+        a, cat_a, b, cat_b, duel = self._start(100)
+        with self.assertRaises(GameError):
+            self.world.cancel_duel(a, duel["id"])
+
+    def test_decline_after_accept_rejected(self):
+        a, cat_a, b, cat_b, duel = self._start(100)
+        with self.assertRaises(GameError):
+            self.world.decline_duel(b, duel["id"])
+
+    # ---------------------------- 超时 ----------------------------
+    def test_invite_expires_and_refunds(self):
+        a, cat_a, b, cat_b = self._pair()
+        duel, _ = self.world.invite_duel(a, cat_a, "阿草", 200)
+        duel["created"] = now_ts() - 2 * 3600     # 超过默认 60 分钟
+        events = self.world.expire_duels()
+        self.assertEqual(duel["status"], "expired")
+        self.assertEqual(a["coins"], 1000)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["owner"], a["key"])
+        self.assertIn("退回", events[0]["message"])
+
+    def test_guess_timeout_refunds_both(self):
+        a, cat_a, b, cat_b, duel = self._start(100)
+        self.world.submit_guess(a, 50)            # 只有一方猜
+        duel["started_at"] = now_ts() - 25 * 3600  # 超过默认 24 小时
+        events = self.world.expire_duels()
+        self.assertEqual(duel["status"], "expired")
+        self.assertEqual(a["coins"], 1000)
+        self.assertEqual(b["coins"], 1000)
+        self.assertEqual({e["owner"] for e in events}, {a["key"], b["key"]})
+
+    def test_active_duel_not_expired(self):
+        a, cat_a, b, cat_b, duel = self._start(100)
+        self.assertEqual(self.world.expire_duels(), [])
+        self.assertEqual(duel["status"], "guessing")
+
+    def test_disabled_duel_system(self):
+        world = make_world({"duel": {"enabled": False}})
+        p1, _ = world.ensure_player("aiocqhttp", "87", "甲", "")
+        p2, _ = world.ensure_player("aiocqhttp", "88", "乙", "")
+        c1, c2 = world.adopt(p1, "甲猫"), world.adopt(p2, "乙猫")
+        with self.assertRaises(GameError):
+            world.invite_duel(p1, c1, "乙猫", 100)
+
+    # ---------------------------- 查询与统计 ----------------------------
+    def test_duel_queries(self):
+        a, cat_a, b, cat_b, duel = self._start(100)
+        self.assertEqual(len(self.world.duels_to_accept(b["key"])), 0)
+        self.assertEqual(len(self.world.duels_awaiting_guess(a["key"])), 1)
+        self.assertEqual(len(self.world.duels_awaiting_guess(b["key"])), 1)
+        self.assertEqual(len(self.world.duels_of_player(a["key"])), 1)
+        self.assertEqual(len(self.world.active_duels()), 1)
+        self.assertIsNotNone(self.world.duel_of_catgirl(str(cat_a["id"])))
+        self.assertIsNotNone(self.world.duel_by_id("1"))     # 省略 D 前缀
+        self.assertIsNone(self.world.duel_by_id("D99"))
+
+    def test_duel_stats_recorded(self):
+        a, cat_a, b, cat_b, duel = self._start(100)
+        duel["target"] = 50
+        self.world.submit_guess(a, 50)
+        self.world.submit_guess(b, 10)
+        self.assertEqual(cat_a["stats"]["duels"], 1)
+        self.assertEqual(cat_a["stats"]["duels_won"], 1)
+        self.assertEqual(cat_b["stats"]["duels"], 1)
+        self.assertNotIn("duels_won", cat_b["stats"])
+
+    def test_actions_after_finish_rejected(self):
+        a, cat_a, b, cat_b, duel = self._start(100)
+        duel["target"] = 50
+        self.world.submit_guess(a, 50)
+        self.world.submit_guess(b, 10)
+        with self.assertRaises(GameError):
+            self.world.submit_guess(a, 20)
+        self.assertEqual(self.world.duels_awaiting_guess(a["key"]), [])
+
+    def test_tick_reports_duel_expiry(self):
+        a, cat_a, b, cat_b = self._pair()
+        duel, _ = self.world.invite_duel(a, cat_a, "阿草", 200)
+        duel["created"] = now_ts() - 2 * 3600
+        result = self.world.tick()
+        self.assertTrue(any(e.get("type") == "duel_expired" for e in result["duels"]))
+
+    def test_trim_keeps_active_duels(self):
+        """历史记录裁剪不能影响进行中的决斗。"""
+        a, cat_a, b, cat_b, duel = self._start(100)
+        for i in range(250):
+            cat_a["stats"]["duels"] = i  # 占位，避免空循环被优化
+            finished = dict(duel, id=f"D{1000 + i}", status="finished",
+                            resolved_at=float(i))
+            self.world.store.duels.append(finished)
+        self.world._trim_duels()
+        ids = [d["id"] for d in self.world.store.duels]
+        self.assertIn(duel["id"], ids)
+
+
+# ======================================================================
 # 商城与市场
 # ======================================================================
 class TestMarket(WorldTestCase):
