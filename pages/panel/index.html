@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>道具与商城管理面板</title>
+  <!-- 相对路径由 AstrBot 服务端重写，直接可用 -->
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <div class="app">
+    <!-- ===================== 顶部标题栏 ===================== -->
+    <header class="app-header">
+      <div class="brand">
+        <span class="brand-emoji" aria-hidden="true">🐱</span>
+        <div class="brand-text">
+          <h1 id="pageTitle">道具与商城管理面板</h1>
+          <p class="brand-sub" id="pageSubtitle">道具管理 · 官方商城 · 数据概览</p>
+        </div>
+      </div>
+      <div class="header-actions">
+        <span class="chip" id="themeChip" title="面板会跟随 AstrBot 的主题设置">🎨 主题：跟随面板</span>
+        <button type="button" class="btn btn-ghost" id="refreshAllBtn">
+          <span aria-hidden="true">🔄</span> 全部刷新
+        </button>
+      </div>
+    </header>
+
+    <!-- 离线预览提示（仅当页面不在 AstrBot 沙箱中打开、桥接缺失时显示） -->
+    <div class="notice notice-warn" id="offlineBanner" hidden>
+      <span aria-hidden="true">⚠️</span>
+      <span>未检测到 AstrBot 桥接（<code>window.AstrBotPluginPage</code>），当前为<strong>离线预览模式</strong>，展示的是内置示例数据，任何改动都不会保存。</span>
+    </div>
+
+    <!-- 全局加载指示器 -->
+    <div class="loading-bar" id="loadingBar" hidden>
+      <span class="spinner" aria-hidden="true"></span>
+      <span id="loadingText">加载中…</span>
+    </div>
+
+    <!-- ===================== 标签导航 ===================== -->
+    <nav class="tabs" role="tablist" aria-label="面板导航">
+      <button type="button" class="tab is-active" role="tab" id="tabBtn-items"
+              data-tab="items" aria-selected="true" aria-controls="panel-items">
+        <span aria-hidden="true">🧰</span> 道具管理
+      </button>
+      <button type="button" class="tab" role="tab" id="tabBtn-shop"
+              data-tab="shop" aria-selected="false" aria-controls="panel-shop" tabindex="-1">
+        <span aria-hidden="true">🏪</span> 官方商城
+      </button>
+      <button type="button" class="tab" role="tab" id="tabBtn-overview"
+              data-tab="overview" aria-selected="false" aria-controls="panel-overview" tabindex="-1">
+        <span aria-hidden="true">📊</span> 概览
+      </button>
+    </nav>
+
+    <main class="panels">
+      <!-- ===================== 标签 1：道具管理 ===================== -->
+      <section class="panel is-active" id="panel-items" role="tabpanel" aria-labelledby="tabBtn-items" tabindex="0">
+        <div class="panel-head">
+          <div class="toolbar">
+            <div class="field field-inline">
+              <label class="field-label" for="itemSearch">搜索</label>
+              <input type="search" id="itemSearch" placeholder="按名称或 ID 搜索…" autocomplete="off">
+            </div>
+            <div class="field field-inline">
+              <label class="field-label" for="itemCategoryFilter">分类</label>
+              <select id="itemCategoryFilter">
+                <option value="">全部分类</option>
+              </select>
+            </div>
+            <label class="check-inline" for="itemOnlyDisabled">
+              <input type="checkbox" id="itemOnlyDisabled">
+              <span>只看已停用</span>
+            </label>
+          </div>
+          <div class="toolbar toolbar-end">
+            <button type="button" class="btn btn-primary" id="addItemBtn">
+              <span aria-hidden="true">➕</span> 新增道具
+            </button>
+            <button type="button" class="btn btn-danger-ghost" id="resetItemsBtn">
+              <span aria-hidden="true">♻️</span> 恢复默认道具
+            </button>
+          </div>
+        </div>
+
+        <div class="table-wrap">
+          <table class="data-table" id="itemsTable">
+            <caption class="sr-only">道具列表</caption>
+            <thead>
+              <tr>
+                <th scope="col">道具</th>
+                <th scope="col" class="col-optional">ID</th>
+                <th scope="col">分类</th>
+                <th scope="col" class="num">基础价格</th>
+                <th scope="col" class="num col-optional">价格浮动</th>
+                <th scope="col" class="num col-optional">日常库存</th>
+                <th scope="col">效果</th>
+                <th scope="col">状态</th>
+                <th scope="col" class="cell-actions">操作</th>
+              </tr>
+            </thead>
+            <tbody id="itemsTbody"></tbody>
+          </table>
+        </div>
+        <p class="empty-hint" id="itemsEmpty" hidden>没有符合条件的道具，试试调整搜索或分类筛选。</p>
+      </section>
+
+      <!-- ===================== 标签 2：官方商城 ===================== -->
+      <section class="panel" id="panel-shop" role="tabpanel" aria-labelledby="tabBtn-shop" tabindex="0" hidden>
+        <div class="panel-head">
+          <div class="toolbar">
+            <span class="chip">📅 商城日期 <b id="shopDate">—</b></span>
+            <span class="chip">⏰ 每日刷新 <b id="shopRefreshHour">—</b></span>
+            <span class="chip">🧾 商品数 <b id="shopCount">0</b></span>
+          </div>
+          <div class="toolbar toolbar-end">
+            <button type="button" class="btn btn-primary" id="shopRefreshBtn">
+              <span aria-hidden="true">🔄</span> 立即刷新商城
+            </button>
+          </div>
+        </div>
+
+        <div class="table-wrap">
+          <table class="data-table" id="shopTable">
+            <caption class="sr-only">今日官方商城商品</caption>
+            <thead>
+              <tr>
+                <th scope="col">商品</th>
+                <th scope="col">分类</th>
+                <th scope="col" class="num">基础价格</th>
+                <th scope="col" class="num">今日价格</th>
+                <th scope="col" class="num">涨跌</th>
+                <th scope="col" class="num">库存</th>
+              </tr>
+            </thead>
+            <tbody id="shopTbody"></tbody>
+          </table>
+        </div>
+        <p class="empty-hint" id="shopEmpty" hidden>今日商城暂无商品，稍后再来看看吧。</p>
+      </section>
+
+      <!-- ===================== 标签 3：概览 ===================== -->
+      <section class="panel" id="panel-overview" role="tabpanel" aria-labelledby="tabBtn-overview" tabindex="0" hidden>
+        <div class="stat-grid" id="statGrid"></div>
+
+        <div class="two-col">
+          <section class="card">
+            <h2 class="card-title"><span aria-hidden="true">🏆</span> 金币排行</h2>
+            <ol class="rank-list" id="topPlayers"></ol>
+            <p class="empty-hint" id="topPlayersEmpty" hidden>暂无玩家数据。</p>
+          </section>
+
+          <section class="card">
+            <h2 class="card-title"><span aria-hidden="true">💰</span> 发放金币</h2>
+            <form id="grantForm" novalidate>
+              <div class="field">
+                <label class="field-label" for="grantPlayerId">玩家 ID</label>
+                <input type="text" id="grantPlayerId" placeholder="例如 aiocqhttp:12345" autocomplete="off" required>
+              </div>
+              <div class="field">
+                <label class="field-label" for="grantAmount">金额（可为负数，表示扣除）</label>
+                <input type="number" id="grantAmount" step="1" value="100" required>
+              </div>
+              <p class="field-error" id="grantError" hidden></p>
+              <button type="submit" class="btn btn-primary btn-block" id="grantSubmitBtn">
+                <span aria-hidden="true">🪙</span> 发放
+              </button>
+            </form>
+          </section>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- ===================== 道具编辑器（模态框） ===================== -->
+  <div class="modal-backdrop" id="editorBackdrop" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="editorTitle">
+      <div class="modal-head">
+        <h2 class="modal-title" id="editorTitle">新增道具</h2>
+        <button type="button" class="icon-btn" id="editorCloseBtn" aria-label="关闭编辑器">✕</button>
+      </div>
+
+      <div class="modal-body">
+        <form id="itemForm" novalidate>
+          <input type="hidden" id="f-originalId" value="">
+
+          <div class="form-section">
+            <h3 class="form-section-title">基础信息</h3>
+            <div class="form-grid">
+              <div class="field">
+                <label class="field-label" for="f-id">道具 ID</label>
+                <input type="text" id="f-id" placeholder="留空则自动生成，例如 cat_food" autocomplete="off" maxlength="32">
+                <p class="field-hint">小写字母、数字、下划线，长度 2-32；留空时由后端按名称生成。修改已有道具的 ID 会新建一个道具。</p>
+                <p class="field-error" id="e-id" hidden></p>
+              </div>
+              <div class="field">
+                <label class="field-label" for="f-name">名称 <span class="req" aria-hidden="true">*</span></label>
+                <input type="text" id="f-name" placeholder="例如 猫粮" autocomplete="off" maxlength="20">
+                <p class="field-hint">最多 20 个字符。</p>
+                <p class="field-error" id="e-name" hidden></p>
+              </div>
+              <div class="field">
+                <label class="field-label" for="f-emoji">表情图标</label>
+                <input type="text" id="f-emoji" maxlength="8" placeholder="🍚">
+                <p class="field-hint">建议只填 1 个 emoji。</p>
+              </div>
+              <div class="field">
+                <label class="field-label" for="f-category">分类</label>
+                <select id="f-category"></select>
+              </div>
+              <div class="field span-2">
+                <label class="field-label" for="f-description">描述</label>
+                <textarea id="f-description" rows="2" maxlength="120" placeholder="展示给玩家的道具说明…"></textarea>
+              </div>
+            </div>
+          </div>
+
+          <div class="form-section">
+            <h3 class="form-section-title">价格与库存</h3>
+            <div class="form-grid">
+              <div class="field">
+                <label class="field-label" for="f-basePrice">基础价格（金币）</label>
+                <input type="number" id="f-basePrice" min="0" step="1" value="0">
+                <p class="field-error" id="e-basePrice" hidden></p>
+              </div>
+              <div class="field">
+                <label class="field-label" for="f-priceFluctuation">价格浮动（0 – 1）</label>
+                <input type="number" id="f-priceFluctuation" min="0" max="1" step="0.05" value="0">
+                <p class="field-hint">官方商城价格会在基础价 ±该比例之间波动。</p>
+                <p class="field-error" id="e-priceFluctuation" hidden></p>
+              </div>
+              <div class="field">
+                <label class="field-label" for="f-stockMin">每日库存下限</label>
+                <input type="number" id="f-stockMin" min="0" step="1" value="0">
+                <p class="field-error" id="e-stockMin" hidden></p>
+              </div>
+              <div class="field">
+                <label class="field-label" for="f-stockMax">每日库存上限</label>
+                <input type="number" id="f-stockMax" min="0" step="1" value="0">
+                <p class="field-error" id="e-stockMax" hidden></p>
+              </div>
+            </div>
+          </div>
+
+          <div class="form-section">
+            <h3 class="form-section-title">使用效果（0 表示无此效果，可为负数）</h3>
+            <div class="form-grid form-grid-4">
+              <div class="field" id="effField-satiety">
+                <label class="field-label" for="f-eff-satiety">饱食</label>
+                <input type="number" id="f-eff-satiety" step="1" value="0">
+              </div>
+              <div class="field" id="effField-hydration">
+                <label class="field-label" for="f-eff-hydration">水分</label>
+                <input type="number" id="f-eff-hydration" step="1" value="0">
+              </div>
+              <div class="field" id="effField-energy">
+                <label class="field-label" for="f-eff-energy">精力</label>
+                <input type="number" id="f-eff-energy" step="1" value="0">
+              </div>
+              <div class="field" id="effField-health">
+                <label class="field-label" for="f-eff-health">健康</label>
+                <input type="number" id="f-eff-health" step="1" value="0">
+              </div>
+            </div>
+            <label class="check-inline" id="reviveRow" for="f-eff-revive">
+              <input type="checkbox" id="f-eff-revive">
+              <span>可复活（对死亡猫娘使用后复活）</span>
+            </label>
+          </div>
+
+          <div class="form-section">
+            <h3 class="form-section-title">开关</h3>
+            <div class="check-row">
+              <label class="check-inline" for="f-shopEnabled">
+                <input type="checkbox" id="f-shopEnabled">
+                <span>官方商城上架</span>
+              </label>
+              <label class="check-inline" for="f-tradable">
+                <input type="checkbox" id="f-tradable">
+                <span>允许玩家交易</span>
+              </label>
+              <label class="check-inline" for="f-enabled">
+                <input type="checkbox" id="f-enabled">
+                <span>启用该道具</span>
+              </label>
+            </div>
+            <p class="field-hint">关闭「启用」后，该道具会在所有地方隐藏。</p>
+          </div>
+        </form>
+
+        <!-- 实时预览卡片 -->
+        <aside class="preview" id="itemPreview" aria-live="polite">
+          <h3 class="preview-title">实时预览</h3>
+          <div class="preview-card">
+            <span class="preview-emoji" id="previewEmoji">📦</span>
+            <div class="preview-info">
+              <span class="preview-name" id="previewName">未命名道具</span>
+              <span class="preview-price" id="previewPrice">0 金币</span>
+              <span class="preview-effect" id="previewEffect">无效果</span>
+            </div>
+          </div>
+          <div class="preview-badges" id="previewBadges"></div>
+        </aside>
+      </div>
+
+      <div class="modal-foot">
+        <span class="modal-hint" id="editorHint" aria-live="polite"></span>
+        <button type="button" class="btn btn-ghost" id="editorCancelBtn">取消</button>
+        <button type="button" class="btn btn-primary" id="editorSaveBtn">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== 通用确认对话框（沙箱内 window.confirm 不可用） ===================== -->
+  <div class="modal-backdrop" id="confirmBackdrop" hidden>
+    <div class="modal modal-sm" role="alertdialog" aria-modal="true" aria-labelledby="confirmTitle" aria-describedby="confirmMessage">
+      <div class="modal-head">
+        <h2 class="modal-title"><span id="confirmIcon" aria-hidden="true">⚠️</span> <span id="confirmTitle">请确认</span></h2>
+      </div>
+      <div class="modal-body">
+        <p class="confirm-message" id="confirmMessage"></p>
+      </div>
+      <div class="modal-foot">
+        <button type="button" class="btn btn-ghost" id="confirmCancelBtn">取消</button>
+        <button type="button" class="btn btn-danger" id="confirmOkBtn">确定</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== 消息提示区 ===================== -->
+  <div class="toast-area" id="toastArea" role="status" aria-live="polite" aria-atomic="false"></div>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

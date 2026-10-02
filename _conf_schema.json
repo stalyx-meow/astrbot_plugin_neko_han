@@ -1,0 +1,255 @@
+{
+  "economy": {
+    "description": "经济系统",
+    "type": "object",
+    "hint": "金币产出与消耗的全局参数。",
+    "items": {
+      "starting_coins": {
+        "description": "新玩家初始金币",
+        "type": "int",
+        "default": 300,
+        "slider": { "min": 0, "max": 5000, "step": 50 }
+      },
+      "daily_allowance": {
+        "description": "每日签到领取的金币",
+        "type": "int",
+        "default": 80,
+        "slider": { "min": 0, "max": 2000, "step": 10 }
+      },
+      "task_reward_multiplier": {
+        "description": "任务奖励倍率",
+        "type": "float",
+        "default": 1.0,
+        "slider": { "min": 0.1, "max": 5.0, "step": 0.1 }
+      },
+      "task_reward_variance": {
+        "description": "任务奖励浮动比例",
+        "type": "float",
+        "default": 0.2,
+        "hint": "0.2 表示每次奖励在基础值的 ±20% 之间浮动。",
+        "slider": { "min": 0, "max": 1, "step": 0.05 }
+      },
+      "market_fee_percent": {
+        "description": "玩家交易手续费（%）",
+        "type": "float",
+        "default": 5.0,
+        "hint": "从卖家收入中扣除，用于回收金币。",
+        "slider": { "min": 0, "max": 30, "step": 0.5 }
+      },
+      "max_listings_per_player": {
+        "description": "每人同时在售的商品上限",
+        "type": "int",
+        "default": 10,
+        "slider": { "min": 1, "max": 50, "step": 1 }
+      },
+      "max_catgirls_per_player": {
+        "description": "每人最多认养的猫娘数量",
+        "type": "int",
+        "default": 3,
+        "slider": { "min": 1, "max": 20, "step": 1 }
+      }
+    }
+  },
+  "survival": {
+    "description": "生存系统",
+    "type": "object",
+    "hint": "猫娘每天消耗饱食度与水分，归零后会开始掉健康值。",
+    "items": {
+      "max_satiety": {
+        "description": "饱食度上限",
+        "type": "int",
+        "default": 100,
+        "slider": { "min": 50, "max": 500, "step": 10 }
+      },
+      "max_hydration": {
+        "description": "水分上限",
+        "type": "int",
+        "default": 100,
+        "slider": { "min": 50, "max": 500, "step": 10 }
+      },
+      "max_health": {
+        "description": "健康值上限",
+        "type": "int",
+        "default": 100,
+        "slider": { "min": 50, "max": 500, "step": 10 }
+      },
+      "max_energy": {
+        "description": "精力值上限",
+        "type": "int",
+        "default": 100,
+        "slider": { "min": 50, "max": 500, "step": 10 }
+      },
+      "satiety_decay_per_day": {
+        "description": "每天消耗的饱食度",
+        "type": "int",
+        "default": 35,
+        "slider": { "min": 0, "max": 200, "step": 5 }
+      },
+      "hydration_decay_per_day": {
+        "description": "每天消耗的水分",
+        "type": "int",
+        "default": 45,
+        "slider": { "min": 0, "max": 200, "step": 5 }
+      },
+      "starvation_damage_per_day": {
+        "description": "饥饿/缺水时每天损失的健康值",
+        "type": "int",
+        "default": 25,
+        "slider": { "min": 0, "max": 100, "step": 5 }
+      },
+      "health_regen_per_day": {
+        "description": "状态良好时每天恢复的健康值",
+        "type": "int",
+        "default": 10,
+        "slider": { "min": 0, "max": 100, "step": 5 }
+      },
+      "health_regen_threshold": {
+        "description": "触发健康恢复所需的饱食度/水分下限",
+        "type": "int",
+        "default": 50,
+        "slider": { "min": 0, "max": 100, "step": 5 }
+      },
+      "energy_regen_per_day": {
+        "description": "每天恢复的精力值",
+        "type": "int",
+        "default": 100,
+        "hint": "默认为上限值，即每天精力全部回满。",
+        "slider": { "min": 0, "max": 500, "step": 10 }
+      },
+      "death_enabled": {
+        "description": "启用死亡机制",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后猫娘健康值最低为 1，不会死亡。"
+      },
+      "grace_days": {
+        "description": "认养后的保护期（天）",
+        "type": "int",
+        "default": 2,
+        "hint": "保护期内猫娘不会死亡，给主人熟悉玩法的时间。",
+        "slider": { "min": 0, "max": 14, "step": 1 }
+      },
+      "offline_decay_cap_days": {
+        "description": "离线结算的最大天数",
+        "type": "int",
+        "default": 30,
+        "hint": "防止机器人长期停机后一次性结算过多天数。",
+        "slider": { "min": 1, "max": 365, "step": 1 }
+      }
+    }
+  },
+  "tasks": {
+    "description": "任务系统",
+    "type": "object",
+    "items": {
+      "daily_task_count": {
+        "description": "每只猫娘每天生成的任务数量",
+        "type": "int",
+        "default": 3,
+        "slider": { "min": 1, "max": 8, "step": 1 }
+      },
+      "allow_parallel_tasks": {
+        "description": "允许同时进行多个任务",
+        "type": "bool",
+        "default": false,
+        "hint": "关闭时每只猫娘同时只能进行一个任务。"
+      }
+    }
+  },
+  "shop": {
+    "description": "官方商城",
+    "type": "object",
+    "items": {
+      "day_reset_hour": {
+        "description": "每日刷新时刻（0-23 点）",
+        "type": "int",
+        "default": 4,
+        "hint": "商城刷新、每日精力恢复与生存结算都以此为准。",
+        "slider": { "min": 0, "max": 23, "step": 1 }
+      },
+      "shop_size": {
+        "description": "每日上架的道具种类数",
+        "type": "int",
+        "default": 8,
+        "slider": { "min": 1, "max": 30, "step": 1 }
+      },
+      "restock_enabled": {
+        "description": "商城商品有库存限制",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后当日商品无限量供应。"
+      },
+      "price_fluctuation_scale": {
+        "description": "价格波动倍率",
+        "type": "float",
+        "default": 1.0,
+        "hint": "全局放大或缩小道具自身设定的价格波动幅度。",
+        "slider": { "min": 0, "max": 3, "step": 0.1 }
+      }
+    }
+  },
+  "marriage": {
+    "description": "结婚系统",
+    "type": "object",
+    "items": {
+      "proposal_expire_hours": {
+        "description": "求婚请求的有效期（小时）",
+        "type": "int",
+        "default": 24,
+        "slider": { "min": 1, "max": 168, "step": 1 }
+      },
+      "divorce_cost": {
+        "description": "离婚所需金币",
+        "type": "int",
+        "default": 500,
+        "slider": { "min": 0, "max": 10000, "step": 50 }
+      },
+      "allow_polygamy": {
+        "description": "允许一妻多夫/一夫多妻",
+        "type": "bool",
+        "default": false,
+        "hint": "关闭时每只猫娘只能有一段婚姻。"
+      },
+      "self_marriage_allowed": {
+        "description": "允许自己的猫娘之间结婚",
+        "type": "bool",
+        "default": false
+      }
+    }
+  },
+  "display": {
+    "description": "显示与通知",
+    "type": "object",
+    "items": {
+      "card_mode": {
+        "description": "状态卡片渲染方式",
+        "type": "string",
+        "default": "text",
+        "options": ["text", "image"],
+        "hint": "image 需要 AstrBot 已配置文转图服务，失败时会自动回退为文本。"
+      },
+      "show_catgirl_id": {
+        "description": "在状态卡片中显示猫娘 ID",
+        "type": "bool",
+        "default": false
+      },
+      "notify_on_death": {
+        "description": "猫娘去世时主动私聊通知主人",
+        "type": "bool",
+        "default": true,
+        "hint": "需要平台支持主动消息；通知会发往主人最后一次发言的会话。"
+      },
+      "notify_on_proposal": {
+        "description": "收到求婚时主动通知对方主人",
+        "type": "bool",
+        "default": true
+      },
+      "tick_interval_minutes": {
+        "description": "后台结算检查间隔（分钟）",
+        "type": "int",
+        "default": 10,
+        "slider": { "min": 1, "max": 120, "step": 1 }
+      }
+    }
+  }
+}
